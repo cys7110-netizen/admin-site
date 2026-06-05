@@ -236,6 +236,10 @@ function KshipApp() {
   }, []);
   const [tab, setTab] = useState("dash-ops");
   const [expandedNav, setExpandedNav] = useState("dashboard");
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [pw, setPw] = useState("");
+  const [pwError, setPwError] = useState(false);
+  const [userRole, setUserRole] = useState("");
 
   // ── 即時營運統計（Supabase 連動，KST 00:00 歸零）──
   const [dailyStats, setDailyStats] = useState({inbound:'-',shipped:'-',pendingShip:'-',unclaimed:'-'});
@@ -270,10 +274,6 @@ function KshipApp() {
   const [showAdd, setShowAdd] = useState(false);
   const [addForm, setAddForm] = useState({ empNo: "", name: "", type: TYPES[0], visa: "", visaType: "", rate: "", msalary: "", startDate: "", resigned: false, resignDate: "" });
   const [sideOpen, setSideOpen] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
-  const [pw, setPw] = useState("");
-  const [pwError, setPwError] = useState(false);
-  const [userRole, setUserRole] = useState("");
 
   const PASSWORDS = {
     "hanji2020/": "boss",
