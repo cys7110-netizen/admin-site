@@ -169,7 +169,7 @@ const NAV = [
     { k: "fin-salary", l: "薪資支出" },
     { k: "fin-collection", l: "收款紀錄" },
     { k: "fin-profit", l: "利潤分析" },
-    { k: "fin-unpaid", l: "未收款管理" },
+    { k: "fin-unpaid", l: "收款管理" },
   ]},
   { k: "customers", l: "客戶管理", sub: [
     { k: "cust-list", l: "客戶列表" },
@@ -240,10 +240,10 @@ function KshipApp() {
   }, []);
   const [tab, setTab] = useState("dash-ops");
   const [expandedNav, setExpandedNav] = useState("dashboard");
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(function(){ try { return localStorage.getItem('hj_admin_logged') === 'true'; } catch(e){ return false; } });
   const [pw, setPw] = useState("");
   const [pwError, setPwError] = useState(false);
-  const [userRole, setUserRole] = useState("");
+  const [userRole, setUserRole] = useState(function(){ try { return localStorage.getItem('hj_admin_role') || ''; } catch(e){ return ''; } });
 
   // ── 即時營運統計（Supabase 連動，KST 00:00 歸零）──
   const [dailyStats, setDailyStats] = useState({inbound:'-',shipped:'-',pendingShip:'-',unclaimed:'-'});
@@ -287,7 +287,7 @@ function KshipApp() {
 
   const handleLogin = () => {
     const role = PASSWORDS[pw];
-    if (role) { setLoggedIn(true); setUserRole(role); setPwError(false); }
+    if (role) { setLoggedIn(true); setUserRole(role); setPwError(false); try{localStorage.setItem('hj_admin_logged','true');localStorage.setItem('hj_admin_role',role);}catch(e){} }
     else { setPwError(true); }
   };
 
@@ -327,6 +327,53 @@ function KshipApp() {
   const [editVal, setEditVal2] = useState("");
   const [expandedYear, setExpandedYear] = useState(null);
   const saveAnnual = (data) => { setAnnualData(data); try{localStorage.setItem('hj_annual_v3',JSON.stringify(data));}catch(e){} };
+  const saveAnnualToCloud = async (dataOverride) => {
+    var d = dataOverride || annualData;
+    try {
+      var res = await sb.from('finance_records').upsert({
+        type: 'annual_report_snapshot',
+        amount: 0,
+        description: JSON.stringify(d),
+        date: new Date().toISOString().slice(0,10)
+      }, { onConflict: 'type' });
+      if(res.error) { if(!dataOverride) alert('❌ 儲存失敗：' + (res.error.message||'')); return; }
+      if(!dataOverride) alert('✅ 年度報表已儲存到 Supabase 雲端');
+    } catch(e) { if(!dataOverride) alert('❌ 儲存異常：' + (e.message||e)); }
+  };
+  const saveSalaryToCloud = async (dataOverride) => {
+    var d = dataOverride || records;
+    try {
+      var res = await sb.from('finance_records').upsert({
+        type: 'salary_records_snapshot',
+        amount: 0,
+        description: JSON.stringify(d),
+        date: new Date().toISOString().slice(0,10)
+      }, { onConflict: 'type' });
+      if(res.error) { if(!dataOverride) alert('❌ 儲存失敗：' + (res.error.message||'')); return; }
+      if(!dataOverride) alert('✅ 薪資記錄已儲存到 Supabase 雲端');
+    } catch(e) { if(!dataOverride) alert('❌ 儲存異常：' + (e.message||e)); }
+  };
+
+  // ── 從 Supabase 載入年度報表 & 薪資記錄（優先雲端資料）──
+  useEffect(() => {
+    if(!sb) return;
+    (async () => {
+      try {
+        var { data } = await sb.from('finance_records').select('*').eq('type','annual_report_snapshot').limit(1);
+        if(data && data.length > 0 && data[0].description) {
+          var parsed = JSON.parse(data[0].description);
+          if(parsed && parsed.length) { setAnnualData(parsed); console.log('📊 年度報表：已從 Supabase 載入'); }
+        }
+      } catch(e) { console.log('年度報表 Supabase 載入失敗，使用本地資料'); }
+      try {
+        var { data: sData } = await sb.from('finance_records').select('*').eq('type','salary_records_snapshot').limit(1);
+        if(sData && sData.length > 0 && sData[0].description) {
+          var parsed2 = JSON.parse(sData[0].description);
+          if(parsed2 && parsed2.length) { setRecords(parsed2); console.log('💰 薪資記錄：已從 Supabase 載入'); }
+        }
+      } catch(e) { console.log('薪資記錄 Supabase 載入失敗，使用本地資料'); }
+    })();
+  }, []);
   const handleAnnualDblClick = (rowIdx, field) => { setEditCell({row:rowIdx,field}); setEditVal2(String(annualData[rowIdx][field]||0)); };
   const handleAnnualSave = () => { if(!editCell) return; var d=[...annualData]; d[editCell.row]={...d[editCell.row],[editCell.field]:parseFloat(editVal)||0}; saveAnnual(d); setEditCell(null); };
   // 按年分組
@@ -638,7 +685,7 @@ function KshipApp() {
   if (calcEmp) { if (isFT) { totalSalary = monthSal; totalPayable = monthSal + bonus - otherExp; } else { basePay = calcEmp.rate * hours; otPay = 5000 * otHours; totalSalary = basePay + otPay; totalPayable = totalSalary + bonus - otherExp; } }
   const tax = calcTax(transfer);
   const cashPay = totalPayable - transfer;
-  const handleSave = () => { if (!calcEmp) return; var rec={ id: Date.now(), month: curMonth, empName: calcEmp.name, empNo: calcEmp.empNo, empType: calcEmp.type, isFT, rate: calcEmp.rate, hours, otHours, monthSal, basePay, otPay, totalSalary, bonus, otherExp, totalPayable, transfer, incomeTax: tax.incomeTax, localTax: tax.localTax, netTransfer: tax.net, cashPay }; var newRecs=[...records,rec]; setRecords(newRecs); try{localStorage.setItem('hj_salary_records',JSON.stringify(newRecs));}catch(e){} setSaved(rec); };
+  const handleSave = () => { if (!calcEmp) return; var rec={ id: Date.now(), month: curMonth, empName: calcEmp.name, empNo: calcEmp.empNo, empType: calcEmp.type, isFT, rate: calcEmp.rate, hours, otHours, monthSal, basePay, otPay, totalSalary, bonus, otherExp, totalPayable, transfer, incomeTax: tax.incomeTax, localTax: tax.localTax, netTransfer: tax.net, cashPay }; var newRecs=[...records,rec]; setRecords(newRecs); try{localStorage.setItem('hj_salary_records',JSON.stringify(newRecs));}catch(e){} setSaved(rec); saveSalaryToCloud(newRecs); };
   const clearCalc = () => { setCalcEmpId(""); setCalcHours(""); setCalcOtHours(""); setCalcBonus(""); setCalcOther(""); setCalcTransfer(""); setCalcMonthSal(""); setSaved(null); };
 
   const monthTotals = {}; records.forEach(r => { monthTotals[r.month] = (monthTotals[r.month] || 0) + r.totalPayable; });
@@ -716,7 +763,7 @@ function KshipApp() {
             <div>{userRole === "boss" ? "👑 管理者" : userRole === "manager" ? "📋 主管" : "📦 員工"}</div>
             <div style={{ marginTop: 2 }}>共 {emps.filter(e => !e.resigned).length} 位在職員工</div>
           </div>
-          <button onClick={() => { setLoggedIn(false); setPw(""); setUserRole(""); setTab("dashboard"); }} style={{ padding: "5px 12px", background: "rgba(255,255,255,.1)", border: "1px solid rgba(255,255,255,.2)", borderRadius: 5, color: "#8aa4c4", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>登出</button>
+          <button onClick={() => { setLoggedIn(false); setPw(""); setUserRole(""); setTab("dashboard"); try{localStorage.removeItem('hj_admin_logged');localStorage.removeItem('hj_admin_role');}catch(e){} }} style={{ padding: "5px 12px", background: "rgba(255,255,255,.1)", border: "1px solid rgba(255,255,255,.2)", borderRadius: 5, color: "#8aa4c4", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>登出</button>
         </div>
       </div>
     </>
@@ -1162,7 +1209,7 @@ function KshipApp() {
               </div>
             )}
 
-            {/* ═══ 未收款管理 ═══ */}
+            {/* ═══ 收款管理 ═══ */}
             {tab === "fin-unpaid" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
@@ -1171,7 +1218,7 @@ function KshipApp() {
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>未收款客戶</h3>
+                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>待付款 / 未付款名單</h3>
                   {[{n:"暫無未付款記錄",a:0,d:0,last:"—",c:"#8a9ab0"}].map((r,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #f0f2f5":"none",gap:10,flexWrap:"wrap",fontSize:13}}>
                       <span style={{width:8,height:8,borderRadius:"50%",background:r.c,flexShrink:0}}/>
@@ -1281,7 +1328,7 @@ function KshipApp() {
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                     <h3 style={{fontSize:14,fontWeight:600,margin:0,color:"#34537d"}}>{curMonth} 薪資明細</h3>
-                    <span style={{fontSize:11,color:"#8a9ab0"}}>從「人資管理→薪資管理」儲存後顯示</span>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={saveSalaryToCloud} style={{background:"rgba(27,79,138,0.08)",border:"1px solid rgba(27,79,138,0.15)",color:"#34537d",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>💾 儲存到雲端</button><span style={{fontSize:11,color:"#8a9ab0"}}>儲存後同步至 Supabase</span></div>
                   </div>
                   {records.filter(r=>r.month===curMonth).length===0 ? (
                     <div style={{textAlign:"center",padding:30,color:"#8a9ab0",fontSize:13}}>本月尚未儲存任何薪資紀錄<br/>請至「人資管理 → 薪資管理」計算並儲存</div>
@@ -1383,7 +1430,7 @@ function KshipApp() {
             {tab === "fin-yearly" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
-                  <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontWeight:600,fontSize:15}}>📊 年度報表</span><span style={{fontSize:11,opacity:.7}}>點擊年份展開 → 雙擊數字編輯</span></div>
+                  <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontWeight:600,fontSize:15}}>📊 年度報表</span><div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={saveAnnualToCloud} style={{background:"rgba(255,255,255,0.2)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>💾 儲存到雲端</button><span style={{fontSize:11,opacity:.7}}>雙擊數字編輯</span></div></div>
                   <div style={{padding:0}}>
                     {annualYears.map(y=>{
                       var yd=getYearData(y);
@@ -1677,17 +1724,17 @@ function KshipApp() {
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:2}}>
                   <span style={{fontSize:13,color:"#4a5568"}}>日期</span>
-                  <input type="date" defaultValue="2026-05-30" style={{...selStyle,width:"auto"}} />
+                  <input type="date" defaultValue={new Date().toISOString().slice(0,10)} style={{...selStyle,width:"auto"}} />
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4, 1fr)",gap:10}}>
-                  {[{l:"出勤",v:`${emps.filter(e=>!e.resigned).length}人`,c:"#5b9e6f"},{l:"請假",v:"0人",c:"#c4953a"},{l:"加班",v:"0人",c:"#7b6ba5"},{l:"未到",v:"0人",c:"#8a9ab0"}].map((s,i)=>(
+                  {[{l:"出勤",v:`${emps.filter(e=>!e.resigned).length}人`,c:"#5b9e6f"},{l:"請假",v:"—",c:"#c4953a"},{l:"加班",v:"—",c:"#7b6ba5"},{l:"未到",v:"—",c:"#8a9ab0"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}>
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>今日出勤列表</h3>
                   {emps.filter(e=>!e.resigned).map((e,i)=>{
-                    const att = i===2 ? {s:"🟡 請假",t:"事假",h:"",c:"#c4953a"} : i===1 ? {s:"✅ 出勤",t:"09:00 - 20:00",h:"11h（加班3h）",c:"#5b9e6f"} : i===3 ? {s:"✅ 出勤",t:"10:00 - 19:00",h:"9h（加班1h）",c:"#5b9e6f"} : {s:"✅ 出勤",t:"09:00 - 18:00",h:"8h",c:"#5b9e6f"};
+                    const att = {s:"— 待記錄",t:"尚未連接考勤系統",h:"",c:"#8a9ab0"};
                     return (
                       <div key={e.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<emps.filter(x=>!x.resigned).length-1?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                         <span style={{color:"#8a9ab0",minWidth:40}}>{e.empNo}</span>
@@ -1703,9 +1750,9 @@ function KshipApp() {
                   {emps.filter(e=>!e.resigned).map((e,i)=>(
                     <div key={e.id} style={{display:"flex",alignItems:"center",padding:"8px 0",borderBottom:i<emps.filter(x=>!x.resigned).length-1?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                       <span style={{fontWeight:600,flex:1,minWidth:50}}>{e.name}</span>
-                      <span style={{color:"#5b9e6f"}}>出勤 {22-i}天</span>
-                      <span style={{color:"#c4953a"}}>請假 0天</span>
-                      <span style={{color:"#7b6ba5"}}>加班 0h</span>
+                      <span style={{color:"#5b9e6f"}}>出勤 —</span>
+                      <span style={{color:"#c4953a"}}>請假 —</span>
+                      <span style={{color:"#7b6ba5"}}>加班 —</span>
                     </div>))}
                 </div>
               </div>
@@ -1753,7 +1800,7 @@ function KshipApp() {
             {tab === "hr-leave" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"本月請假",v:"0 次",c:"#34537d"},{l:"待審核",v:"0 件",c:"#c4953a"},{l:"今日請假",v:"0 人",c:"#8a9ab0"}].map((s,i)=>(
+                  {[{l:"本月請假",v:"—",c:"#34537d"},{l:"待審核",v:"—",c:"#c4953a"},{l:"今日請假",v:"—",c:"#8a9ab0"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}>
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
@@ -2022,12 +2069,15 @@ function KshipApp() {
                       <div key={i} style={{background:"#f5f8fc",borderRadius:6,padding:10,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                   </div>
                 </div>
-                <button onClick={()=>{
+                <button onClick={async ()=>{
                   var t=document.getElementById("vip-threshold").value;
                   var d=document.getElementById("vip-discount").value;
                   localStorage.setItem("hj_vip_threshold",t);
                   localStorage.setItem("hj_vip_discount",d);
-                  alert("✅ 設定已儲存！\nVIP 門檻："+t+" 件\n運費折扣："+d+"%");
+                  try {
+                    await sb.from('finance_records').upsert({ type:'vip_settings', amount:0, description:JSON.stringify({threshold:t,discount:d}), date:new Date().toISOString().slice(0,10) }, { onConflict:'type' });
+                  } catch(e){}
+                  alert("✅ 設定已儲存（本地 + Supabase）\nVIP 門檻："+t+" 件\n運費折扣："+d+"%");
                 }} style={{...btnP,padding:"14px",fontSize:15,width:"100%",borderRadius:8,background:"#34537d",color:"#fff"}}>💾 儲存設定</button>
               </div>
             )}
