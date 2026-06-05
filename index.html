@@ -258,24 +258,16 @@ function KshipApp() {
         var end = new Date(new Date(start).getTime() + 86400000).toISOString();
 
         var [r1,r2,r3,r4] = await Promise.all([
-          sb.from('packages').select('*',{count:'exact',head:true}).gte('created_at',start).lt('created_at',end),
-          sb.from('tasks').select('*',{count:'exact',head:true}).eq('task_type','ship').eq('status','completed').gte('created_at',start).lt('created_at',end),
-          sb.from('tasks').select('*',{count:'exact',head:true}).eq('task_type','ship').eq('status','pending'),
+          sb.from('packages').select('*',{count:'exact',head:true}).or('scanned_at.gte.'+start+',created_at.gte.'+start).or('scanned_at.lt.'+end+',created_at.lt.'+end),
+          sb.from('tasks').select('*',{count:'exact',head:true}).or('task_type.eq.ship,type.eq.ship').eq('status','completed').gte('created_at',start).lt('created_at',end),
+          sb.from('tasks').select('*',{count:'exact',head:true}).or('task_type.eq.ship,type.eq.ship').eq('status','pending'),
           sb.from('packages').select('*',{count:'exact',head:true}).eq('status','unclaimed')
         ]);
-        var inbound = r1.count||0;
-        // fallback: scanned_at NULL → 用 created_at
-        if(!inbound) { var rf = await sb.from('packages').select('*',{count:'exact',head:true}).gte('created_at',start).lt('created_at',end); inbound = rf.count||0; }
-        // fallback: task_type → type
-        var shipped = r2.count||0;
-        if(!shipped) { var rs = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('type','ship').eq('status','completed').gte('created_at',start).lt('created_at',end); shipped = rs.count||0; }
-        var pendingShip = r3.count||0;
-        if(!pendingShip) { var rp = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('type','ship').eq('status','pending'); pendingShip = rp.count||0; }
         setDailyStats({
-          inbound: inbound, shipped: shipped,
-          pendingShip: pendingShip, unclaimed: r4.count||0
+          inbound: r1.count||0, shipped: r2.count||0,
+          pendingShip: r3.count||0, unclaimed: r4.count||0
         });
-        console.log('📊 管理端統計:', {inbound, shipped, pendingShip, unclaimed:r4.count});
+        console.log('📊 管理端統計:', {inbound:r1.count, shipped:r2.count, pendingShip:r3.count, unclaimed:r4.count});
       } catch(e) { console.error('loadDailyStats:', e); }
     }
     if(loggedIn) { loadDailyStats(); loadInboundDetail(); loadPerformance(); }
@@ -535,9 +527,7 @@ function KshipApp() {
       var now=new Date(),kstMs=now.getTime()+(9*60+now.getTimezoneOffset())*60000,kst=new Date(kstMs);
       var start=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth(),kst.getUTCDate())-9*3600000).toISOString();
       var end=new Date(new Date(start).getTime()+86400000).toISOString();
-      var {data}=await sb.from('packages').select('*').gte('created_at',start).lt('created_at',end).order('created_at',{ascending:false});
-      // fallback: scanned_at NULL → 用 created_at
-      if(!data||data.length===0) { var rf=await sb.from('packages').select('*').gte('created_at',start).lt('created_at',end).order('created_at',{ascending:false}); data=rf.data; }
+      var {data}=await sb.from('packages').select('*').or('scanned_at.gte.'+start+',created_at.gte.'+start).or('scanned_at.lt.'+end+',created_at.lt.'+end).order('created_at',{ascending:false});
       setInboundDetail(data||[]);
     } catch(e){ console.error('loadInboundDetail:',e); }
   }
@@ -558,8 +548,9 @@ function KshipApp() {
       })();
 
       // 今日入庫 by 員工（所有今天掃碼的包裹）
-      var {data:todayPkgs} = await sb.from('packages').select('processed_by_name,scanned_at')
-        .gte('created_at',range.start).lt('created_at',range.end);
+      var {data:todayPkgs} = await sb.from('packages').select('processed_by_name,scanned_at,created_at')
+        .or('scanned_at.gte.'+range.start+',created_at.gte.'+range.start)
+        .or('scanned_at.lt.'+range.end+',created_at.lt.'+range.end);
       todayPkgs = todayPkgs||[];
       var perfMap = {};
       todayPkgs.forEach(function(p){
@@ -1028,7 +1019,7 @@ function KshipApp() {
                       <div style={{padding:40,textAlign:"center",color:"#8a9ab0",fontSize:14}}>今日尚無入庫包裹</div>
                     ) : (
                       <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
-                        <thead><tr>{["單號","會員","重量","貨架","處理人","時間"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",background:"#f8fafc"}}>{h}</th>)}</tr></thead>
+                        <thead><tr>{["單號","會員","重量","貨架","員工","時間"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",background:"#f8fafc"}}>{h}</th>)}</tr></thead>
                         <tbody>
                           {inboundDetail.map((p,i)=>{
                             var t=p.scanned_at?new Date(p.scanned_at).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit"}):"—";
