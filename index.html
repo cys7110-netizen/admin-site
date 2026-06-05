@@ -1430,7 +1430,7 @@ function KshipApp() {
             {tab === "fin-yearly" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
-                  <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontWeight:600,fontSize:15}}>📊 年度報表</span><div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={saveAnnualToCloud} style={{background:"rgba(255,255,255,0.2)",border:"1px solid rgba(255,255,255,0.3)",color:"#fff",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>💾 儲存到雲端</button><span style={{fontSize:11,opacity:.7}}>雙擊數字編輯</span></div></div>
+                  <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontWeight:600,fontSize:15}}>📊 年度報表</span><span style={{fontSize:11,opacity:.7}}>雙擊數字編輯 → 自動儲存雲端</span></div>
                   <div style={{padding:0}}>
                     {annualYears.map(y=>{
                       var yd=getYearData(y);
@@ -1482,6 +1482,7 @@ function KshipApp() {
                   {[{l:"總營收",v:w(annualTotalRev),c:"#34537d"},{l:"總支出",v:w(annualTotalExp),c:"#c0504d"},{l:"總利潤",v:w(annualTotalRev-annualTotalExp),c:"#5b9e6f"},{l:"總重量",v:(annualTotalWeight/1000).toFixed(1)+" t",c:"#7b6ba5"},{l:"總出貨",v:annualTotalShip+" 件",c:"#34537d"},{l:"利潤率",v:annualTotalRev?(Math.round((annualTotalRev-annualTotalExp)/annualTotalRev*1000)/10)+"%":"0%",c:"#5b9e6f"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:6,padding:10,textAlign:"center",border:"1px solid #dce3ed"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
+                <button onClick={()=>saveAnnualToCloud()} style={{width:"100%",padding:"14px",fontSize:15,fontWeight:700,background:"#34537d",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",marginTop:12,fontFamily:"inherit"}}>💾 儲存年度報表</button>
               </div>
             )}
 
