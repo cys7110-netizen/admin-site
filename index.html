@@ -730,8 +730,8 @@ function KshipApp() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
             {[
               { label: "出勤", value: `${emps.filter(e => !e.resigned).length} / ${emps.filter(e => !e.resigned).length}`, unit: "人", color: "#34537d" },
-              { label: "請假", value: "1", unit: "人", color: "#c4953a" },
-              { label: "加班", value: "2", unit: "人", color: "#7b6ba5" },
+              { label: "請假", value: "0", unit: "人", color: "#c4953a" },
+              { label: "加班", value: "0", unit: "人", color: "#7b6ba5" },
             ].map((s, i) => (
               <div key={i} style={{ background: "#f5f8fc", borderRadius: 6, padding: "12px", textAlign: "center" }}>
                 <div style={{ fontSize: 11, color: "#8a9ab0", marginBottom: 4 }}>{s.label}</div>
@@ -888,8 +888,8 @@ function KshipApp() {
                 <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 10 }}>
                   {[
                     { label: "本月累計入庫", value: "—", unit: "件", color: "#34537d" },
-                    { label: "當月入庫件數", value: "4,289", sub: "未包裝 39 件", unit: "件", color: "#5b9e6f" },
-                    { label: "已合併出貨", value: "1,056", sub: "客人合併出貨箱數", unit: "箱", color: "#7b6ba5" },
+                    { label: "當月入庫件數", value: "0", sub: "", unit: "件", color: "#5b9e6f" },
+                    { label: "已合併出貨", value: "0", sub: "", unit: "箱", color: "#7b6ba5" },
                   ].map((s, i) => (
                     <div key={i} style={{ background: "#fff", borderRadius: 8, padding: "16px", border: "1px solid #dce3ed", textAlign: "center" }}>
                       <div style={{ fontSize: 11, color: "#8a9ab0", marginBottom: 6 }}>{s.label}</div>
@@ -911,10 +911,10 @@ function KshipApp() {
                     <h3 style={{ fontSize: 14, fontWeight: 600, margin: "0 0 12px", color: "#34537d" }}>每週出貨趨勢</h3>
                     <div style={{ fontSize: 13 }}>
                       {[
-                        { week: "第1週", count: 1023, pct: 100 },
-                        { week: "第2週", count: 1156, pct: 113 },
-                        { week: "第3週", count: 1087, pct: 106 },
-                        { week: "第4週", count: 1062, pct: 104 },
+                        { week: "第1週", count: 0, pct: 0 },
+                        { week: "第2週", count: 0, pct: 0 },
+                        { week: "第3週", count: 0, pct: 0 },
+                        { week: "第4週", count: 0, pct: 0 },
                       ].map((r, i) => (
                         <div key={i} style={{ padding: "8px 0", borderBottom: i < 3 ? "1px solid #f0f2f5" : "none" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}><span style={{ color: "#4a5568" }}>{r.week}</span><span style={{ fontWeight: 600 }}>{r.count.toLocaleString()} 件</span></div>
@@ -934,8 +934,8 @@ function KshipApp() {
                   {[
                     { label: "在職人數", value: emps.filter(e => !e.resigned).length, unit: "人", color: "#34537d" },
                     { label: "今日出勤", value: `${emps.filter(e => !e.resigned).length} / ${emps.filter(e => !e.resigned).length}`, unit: "人", color: "#5b9e6f" },
-                    { label: "請假", value: "1", unit: "人", color: "#c4953a" },
-                    { label: "加班", value: "2", unit: "人", color: "#7b6ba5" },
+                    { label: "請假", value: "0", unit: "人", color: "#c4953a" },
+                    { label: "加班", value: "0", unit: "人", color: "#7b6ba5" },
                   ].map((s, i) => (
                     <div key={i} style={{ background: "#fff", borderRadius: 8, padding: "16px", border: "1px solid #dce3ed", textAlign: "center" }}>
                       <div style={{ fontSize: 11, color: "#8a9ab0", marginBottom: 6 }}>{s.label}</div>
@@ -1007,7 +1007,7 @@ function KshipApp() {
                     <span style={{ fontWeight: 700 }}>本月利潤</span>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 20, fontWeight: 800, color: "#5b9e6f" }}>{w(fin.monthProfit)}</div>
-                      <div style={{ fontSize: 12, color: "#5b9e6f" }}>利潤率 60.5%</div>
+                      <div style={{ fontSize: 12, color: "#5b9e6f" }}>利潤率 {fin.monthRev?(Math.round(fin.monthProfit/fin.monthRev*1000)/10):0}%</div>
                     </div>
                   </div>
                 </div>
@@ -1020,14 +1020,14 @@ function KshipApp() {
                 <div style={{ background: "#fff", borderRadius: 8, padding: 18, border: "1px solid #dce3ed" }}>
                   <h3 style={{ fontSize: 14, fontWeight: 600, margin: "0 0 14px", color: "#34537d" }}>📋 今日摘要</h3>
                   <div style={{ background: "#f5f8fc", borderRadius: 8, padding: 16, fontSize: 14, lineHeight: 1.8, color: "#4a5568", border: "1px solid #e4e9f0" }}>
-                    今日入庫量較昨日增加 12%，出貨效率維持穩定。有 3 件異常包裹需處理。未收款金額 {w(fin.outstanding)} 建議優先催收超過 30 天的 2 位客戶。本月營收已達 {w(fin.monthRev)}，利潤率維持穩定。
+                    今日入庫 {dailyStats.inbound} 件，出貨 {dailyStats.shipped} 件，異常件 {dailyStats.unclaimed} 件。本月營收 {w(fin.monthRev)}，未收款 {w(fin.outstanding)}。
                   </div>
                 </div>
                 <div style={{ background: "#fff", borderRadius: 8, padding: 18, border: "1px solid #dce3ed" }}>
                   <h3 style={{ fontSize: 14, fontWeight: 600, margin: "0 0 14px", color: "#c0504d" }}>⚠️ 異常提醒</h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {[
-                      { text: "異常包裹 3 件待處理", color: "#c0504d" },
+                      { text: "異常包裹 {dailyStats.unclaimed} 件待處理", color: "#c0504d" },
                       { text: "請查看 finance_records 表的未收款記錄", color: "#c0504d" },
                       { text: `員工簽證 ${daysLeft("2026-07-01") || 0} 天後到期`, color: "#c4953a" },
                     ].map((r, i) => (
@@ -1042,9 +1042,9 @@ function KshipApp() {
                   <h3 style={{ fontSize: 14, fontWeight: 600, margin: "0 0 14px", color: "#5b9e6f" }}>📈 建議</h3>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {[
-                      "本週出貨量下降 6%，建議檢查原因",
-                      "VIP 客戶本月消費下降，建議回訪",
-                      "建議補充包材庫存，目前剩餘量偏低",
+                      "數據載入中，請先新增營運資料",
+                      "目前無 VIP 客戶消費紀錄",
+                      "目前無庫存資料",
                     ].map((r, i) => (
                       <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#f0fdf4", borderRadius: 6, border: "1px solid #d1fae5" }}>
                         <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#5b9e6f", flexShrink: 0 }} />
@@ -1074,7 +1074,7 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>近7日營收趨勢</h3>
-                  {[{d:"5/24",v:1620000},{d:"5/25",v:1780000},{d:"5/26",v:1450000},{d:"5/27",v:1920000},{d:"5/28",v:2100000},{d:"5/29",v:1680000},{d:"5/30",v:1850000}].map((r,i)=>(
+                  {[{d:"—",v:0}].map((r,i)=>(
                     <div key={i} style={{padding:"6px 0",borderBottom:i<6?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,fontSize:13}}><span style={{color:"#4a5568"}}>{r.d}</span><span style={{fontWeight:600}}>{w(r.v)}</span></div>
                       <div style={{background:"#eef2f7",borderRadius:3,height:5}}><div style={{background:"#34537d",borderRadius:3,height:5,width:`${(r.v/2100000*100).toFixed(0)}%`}}/></div>
@@ -1275,7 +1275,7 @@ function KshipApp() {
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
                   <div><div style={{fontSize:11,color:"#8a9ab0"}}>本月利潤</div><div style={{fontSize:24,fontWeight:700,color:"#5b9e6f"}}>{w(fin.monthProfit)}</div></div>
-                  <div style={{background:"#e8f5e9",padding:"8px 16px",borderRadius:8}}><span style={{fontSize:14,fontWeight:700,color:"#5b9e6f"}}>利潤率 60.5%</span></div>
+                  <div style={{background:"#e8f5e9",padding:"8px 16px",borderRadius:8}}><span style={{fontSize:14,fontWeight:700,color:"#5b9e6f"}}>利潤率 {fin.monthRev?(Math.round(fin.monthProfit/fin.monthRev*1000)/10):0}%</span></div>
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>收入結構</h3>
@@ -1287,7 +1287,7 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>每月利潤趨勢</h3>
-                  {[{m:"2026/01",v:15200000,r:58},{m:"2026/02",v:16800000,r:59},{m:"2026/03",v:18100000,r:61},{m:"2026/04",v:17500000,r:60},{m:"2026/05",v:19650000,r:60.5}].map((r,i)=>(
+                  {[{m:"—",v:0,r:0}].map((r,i)=>(
                     <div key={i} style={{padding:"8px 0",borderBottom:i<4?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}>
                         <span style={{color:r.m===curMonth?"#34537d":"#4a5568",fontWeight:r.m===curMonth?700:400}}>{r.m}</span>
@@ -1310,12 +1310,12 @@ function KshipApp() {
                 </div>
                 <div style={{padding:18,fontSize:13}}>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
-                    {[{l:"總營收",v:w(fin.monthRev),c:"#34537d"},{l:"總支出",v:w(fin.monthExpTotal||0),c:"#c0504d"},{l:"淨利潤",v:w(fin.monthProfit),c:"#5b9e6f"},{l:"利潤率",v:"60.5%",c:"#5b9e6f"}].map((s,i)=>(
+                    {[{l:"總營收",v:w(fin.monthRev),c:"#34537d"},{l:"總支出",v:w(fin.monthExpTotal||0),c:"#c0504d"},{l:"淨利潤",v:w(fin.monthProfit),c:"#5b9e6f"},{l:"利潤率",v:fin.monthRev?(Math.round(fin.monthProfit/fin.monthRev*1000)/10)+"%":"0%",c:"#5b9e6f"}].map((s,i)=>(
                       <div key={i} style={{background:"#f5f8fc",borderRadius:6,padding:12,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                   </div>
                   <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
                     <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>營運數據</div>
-                    {[{l:"出貨件數",v:"4,328 件"},{l:"客戶數",v:"—"},{l:"新增客戶",v:"—"}].map((r,i)=>(
+                    {[{l:"出貨件數",v:"0 件"},{l:"客戶數",v:"—"},{l:"新增客戶",v:"—"}].map((r,i)=>(
                       <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.l}</span><span style={{fontWeight:600}}>{r.v}</span></div>))}
                   </div>
                   <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
@@ -1452,7 +1452,7 @@ function KshipApp() {
             {tab === "cust-active" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"活躍客戶",v:"—",c:"#5b9e6f"},{l:"本月消費",v:w(fin.monthRev),c:"#34537d"},{l:"平均消費",v:"₩ 156,000/人",c:"#7b6ba5"}].map((s,i)=>(
+                  {[{l:"活躍客戶",v:"—",c:"#5b9e6f"},{l:"本月消費",v:w(fin.monthRev),c:"#34537d"},{l:"平均消費",v:"—",c:"#7b6ba5"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
@@ -1471,7 +1471,7 @@ function KshipApp() {
             {tab === "cust-inactive" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"沉睡客戶",v:"89 位",c:"#8a9ab0"},{l:"超過60天",v:"32 位",c:"#c0504d"},{l:"流失風險（曾VIP）",v:"—",c:"#c4953a"}].map((s,i)=>(
+                  {[{l:"沉睡客戶",v:custList.filter(function(c){return c.pkgCount===0;}).length+" 位",c:"#8a9ab0"},{l:"超過60天",v:"0 位",c:"#c0504d"},{l:"流失風險（曾VIP）",v:"—",c:"#c4953a"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:16,border:`1px solid ${i===1?"#f0d0ce":"#dce3ed"}`,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
@@ -1540,7 +1540,7 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>客戶等級分佈</h3>
-                  {[{l:"VIP",v:42,pct:7,c:"#c4953a"},{l:"一般",v:580,pct:91,c:"#34537d"},{l:"黑名單",v:13,pct:2,c:"#c0504d"}].map((r,i)=>(
+                  {[{l:"VIP",v:custStats.vip,pct:custStats.total?Math.round(custStats.vip/custStats.total*100):0,c:"#c4953a"},{l:"一般",v:custStats.total-custStats.vip,pct:custStats.total?Math.round((custStats.total-custStats.vip)/custStats.total*100):0,c:"#34537d"},{l:"黑名單",v:0,pct:0,c:"#c0504d"}].map((r,i)=>(
                     <div key={i} style={{padding:"8px 0",borderBottom:i<2?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}><span>{r.l}</span><span style={{fontWeight:600}}>{r.v} 位</span></div>
                       <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{flex:1,background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.c,borderRadius:3,height:6,width:`${r.pct}%`}}/></div><span style={{fontSize:11,color:"#8a9ab0"}}>{r.pct}%</span></div>
@@ -1605,7 +1605,7 @@ function KshipApp() {
                   <input type="date" defaultValue="2026-05-30" style={{...selStyle,width:"auto"}} />
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4, 1fr)",gap:10}}>
-                  {[{l:"出勤",v:`${emps.filter(e=>!e.resigned).length-1}人`,c:"#5b9e6f"},{l:"請假",v:"1人",c:"#c4953a"},{l:"加班",v:"2人",c:"#7b6ba5"},{l:"未到",v:"0人",c:"#8a9ab0"}].map((s,i)=>(
+                  {[{l:"出勤",v:`${emps.filter(e=>!e.resigned).length}人`,c:"#5b9e6f"},{l:"請假",v:"0人",c:"#c4953a"},{l:"加班",v:"0人",c:"#7b6ba5"},{l:"未到",v:"0人",c:"#8a9ab0"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}>
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
@@ -1629,8 +1629,8 @@ function KshipApp() {
                     <div key={e.id} style={{display:"flex",alignItems:"center",padding:"8px 0",borderBottom:i<emps.filter(x=>!x.resigned).length-1?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                       <span style={{fontWeight:600,flex:1,minWidth:50}}>{e.name}</span>
                       <span style={{color:"#5b9e6f"}}>出勤 {22-i}天</span>
-                      <span style={{color:"#c4953a"}}>請假 {i===2?1:0}天</span>
-                      <span style={{color:"#7b6ba5"}}>加班 {[12,18,5,0][i]||0}h</span>
+                      <span style={{color:"#c4953a"}}>請假 0天</span>
+                      <span style={{color:"#7b6ba5"}}>加班 0h</span>
                     </div>))}
                 </div>
               </div>
@@ -1678,7 +1678,7 @@ function KshipApp() {
             {tab === "hr-leave" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"本月請假",v:"5 次",c:"#34537d"},{l:"待審核",v:"1 件",c:"#c4953a"},{l:"今日請假",v:"1 人",c:"#8a9ab0"}].map((s,i)=>(
+                  {[{l:"本月請假",v:"0 次",c:"#34537d"},{l:"待審核",v:"0 件",c:"#c4953a"},{l:"今日請假",v:"0 人",c:"#8a9ab0"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}>
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
@@ -1923,7 +1923,7 @@ function KshipApp() {
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>等級規則</h3>
-                  {[{g:"VIP",rule:"累計消費 ≥ ₩5,000,000",benefit:"折扣 5%",c:"#c4953a",count:42},{g:"一般",rule:"累計消費 < ₩5,000,000",benefit:"無折扣",c:"#34537d",count:580},{g:"黑名單",rule:"手動設定",benefit:"禁止下單",c:"#c0504d",count:13}].map((r,i)=>(
+                  {[{g:"VIP",rule:"累計消費 ≥ ₩5,000,000",benefit:"折扣 5%",c:"#c4953a",count:custStats.vip},{g:"一般",rule:"累計消費 < ₩5,000,000",benefit:"無折扣",c:"#34537d",count:custStats.total-custStats.vip},{g:"黑名單",rule:"手動設定",benefit:"禁止下單",c:"#c0504d",count:0}].map((r,i)=>(
                     <div key={i} style={{padding:"14px 0",borderBottom:i<2?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
                         <div style={{display:"flex",alignItems:"center",gap:10}}>
