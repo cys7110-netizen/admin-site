@@ -257,17 +257,26 @@ function KshipApp() {
         var start = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000).toISOString();
         var end = new Date(new Date(start).getTime() + 86400000).toISOString();
 
-        var [r1,r2,r3,r4] = await Promise.all([
-          sb.from('packages').select('*',{count:'exact',head:true}).or('scanned_at.gte.'+start+',created_at.gte.'+start).or('scanned_at.lt.'+end+',created_at.lt.'+end),
-          sb.from('tasks').select('*',{count:'exact',head:true}).or('task_type.eq.ship,type.eq.ship').eq('status','completed').gte('created_at',start).lt('created_at',end),
-          sb.from('tasks').select('*',{count:'exact',head:true}).or('task_type.eq.ship,type.eq.ship').eq('status','pending'),
-          sb.from('packages').select('*',{count:'exact',head:true}).eq('status','unclaimed')
-        ]);
+        // 今日入庫：兩個查詢取最大值
+        var r1a = await sb.from('packages').select('*',{count:'exact',head:true}).gte('created_at',start).lt('created_at',end);
+        var c1b = 0;
+        try { var r1b = await sb.from('packages').select('*',{count:'exact',head:true}).gte('scanned_at',start).lt('scanned_at',end); c1b = r1b.count||0; } catch(e){}
+        var inbound = Math.max(r1a.count||0, c1b);
+        // 今日出貨 + 待出貨（task_type / type 雙查詢）
+        var r2a = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('task_type','ship').eq('status','completed').gte('created_at',start).lt('created_at',end);
+        var c2b = 0;
+        try { var r2b = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('type','ship').eq('status','completed').gte('created_at',start).lt('created_at',end); c2b = r2b.count||0; } catch(e){}
+        var shipped = Math.max(r2a.count||0, c2b);
+        var r3a = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('task_type','ship').eq('status','pending');
+        var c3b = 0;
+        try { var r3b = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('type','ship').eq('status','pending'); c3b = r3b.count||0; } catch(e){}
+        var pendingShip = Math.max(r3a.count||0, c3b);
+        var r4 = await sb.from('packages').select('*',{count:'exact',head:true}).eq('status','unclaimed');
         setDailyStats({
-          inbound: r1.count||0, shipped: r2.count||0,
-          pendingShip: r3.count||0, unclaimed: r4.count||0
+          inbound: inbound, shipped: shipped,
+          pendingShip: pendingShip, unclaimed: r4.count||0
         });
-        console.log('📊 管理端統計:', {inbound:r1.count, shipped:r2.count, pendingShip:r3.count, unclaimed:r4.count});
+        console.log('📊 管理端統計:', {inbound, shipped, pendingShip, unclaimed:r4.count});
       } catch(e) { console.error('loadDailyStats:', e); }
     }
     if(loggedIn) { loadDailyStats(); loadInboundDetail(); loadPerformance(); }
@@ -527,7 +536,15 @@ function KshipApp() {
       var now=new Date(),kstMs=now.getTime()+(9*60+now.getTimezoneOffset())*60000,kst=new Date(kstMs);
       var start=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth(),kst.getUTCDate())-9*3600000).toISOString();
       var end=new Date(new Date(start).getTime()+86400000).toISOString();
-      var {data}=await sb.from('packages').select('*').or('scanned_at.gte.'+start+',created_at.gte.'+start).or('scanned_at.lt.'+end+',created_at.lt.'+end).order('created_at',{ascending:false});
+      var {data}=await sb.from('packages').select('*').gte('created_at',start).lt('created_at',end).order('created_at',{ascending:false});
+      // 補充：也抓 scanned_at 在今天的
+      try {
+        var {data:d2}=await sb.from('packages').select('*').gte('scanned_at',start).lt('scanned_at',end);
+        if(d2 && d2.length > 0) {
+          var ids = new Set((data||[]).map(function(p){return p.id}));
+          d2.forEach(function(p){ if(!ids.has(p.id)){ data = data||[]; data.push(p); }});
+        }
+      } catch(e){}
       setInboundDetail(data||[]);
     } catch(e){ console.error('loadInboundDetail:',e); }
   }
@@ -547,10 +564,14 @@ function KshipApp() {
         return {start:s.toISOString(),end:new Date(s.getTime()+86400000).toISOString()};
       })();
 
-      // 今日入庫 by 員工（所有今天掃碼的包裹）
-      var {data:todayPkgs} = await sb.from('packages').select('processed_by_name,scanned_at,created_at')
-        .or('scanned_at.gte.'+range.start+',created_at.gte.'+range.start)
-        .or('scanned_at.lt.'+range.end+',created_at.lt.'+range.end);
+      // 今日入庫 by 員工（兩個查詢合併）
+      var {data:todayPkgs} = await sb.from('packages').select('processed_by_name,created_at')
+        .gte('created_at',range.start).lt('created_at',range.end);
+      try {
+        var {data:todayPkgs2} = await sb.from('packages').select('processed_by_name,scanned_at')
+          .gte('scanned_at',range.start).lt('scanned_at',range.end);
+        if(todayPkgs2 && todayPkgs2.length > (todayPkgs||[]).length) todayPkgs = todayPkgs2;
+      } catch(e){}
       todayPkgs = todayPkgs||[];
       var perfMap = {};
       todayPkgs.forEach(function(p){
