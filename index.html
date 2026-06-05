@@ -257,26 +257,25 @@ function KshipApp() {
         var start = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000).toISOString();
         var end = new Date(new Date(start).getTime() + 86400000).toISOString();
 
-        // 今日入庫：兩個查詢取最大值
-        var r1a = await sb.from('packages').select('*',{count:'exact',head:true}).gte('created_at',start).lt('created_at',end);
-        var c1b = 0;
-        try { var r1b = await sb.from('packages').select('*',{count:'exact',head:true}).gte('scanned_at',start).lt('scanned_at',end); c1b = r1b.count||0; } catch(e){}
-        var inbound = Math.max(r1a.count||0, c1b);
-        // 今日出貨 + 待出貨（task_type / type 雙查詢）
-        var r2a = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('task_type','ship').eq('status','completed').gte('created_at',start).lt('created_at',end);
-        var c2b = 0;
-        try { var r2b = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('type','ship').eq('status','completed').gte('created_at',start).lt('created_at',end); c2b = r2b.count||0; } catch(e){}
-        var shipped = Math.max(r2a.count||0, c2b);
-        var r3a = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('task_type','ship').eq('status','pending');
-        var c3b = 0;
-        try { var r3b = await sb.from('tasks').select('*',{count:'exact',head:true}).eq('type','ship').eq('status','pending'); c3b = r3b.count||0; } catch(e){}
-        var pendingShip = Math.max(r3a.count||0, c3b);
-        var r4 = await sb.from('packages').select('*',{count:'exact',head:true}).eq('status','unclaimed');
-        setDailyStats({
-          inbound: inbound, shipped: shipped,
-          pendingShip: pendingShip, unclaimed: r4.count||0
-        });
-        console.log('📊 管理端統計:', {inbound, shipped, pendingShip, unclaimed:r4.count});
+        // 今日入庫：撈全部包裹用 JS 篩選（最可靠）
+        var { data:allPkg } = await sb.from('packages').select('id,status,created_at,scanned_at,updated_at');
+        var inbound = (allPkg||[]).filter(function(p){
+          return (p.created_at && p.created_at >= start && p.created_at < end)
+              || (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
+              || (p.updated_at && p.updated_at >= start && p.updated_at < end);
+        }).length;
+        var unclaimed = (allPkg||[]).filter(function(p){ return p.status === 'unclaimed'; }).length;
+        // 今日出貨 + 待出貨
+        var { data:allTasks } = await sb.from('tasks').select('id,task_type,type,status,created_at');
+        var shipped = (allTasks||[]).filter(function(t){
+          return (t.task_type==='ship'||t.type==='ship') && t.status==='completed'
+            && t.created_at && t.created_at >= start && t.created_at < end;
+        }).length;
+        var pendingShip = (allTasks||[]).filter(function(t){
+          return (t.task_type==='ship'||t.type==='ship') && t.status==='pending';
+        }).length;
+        setDailyStats({ inbound: inbound, shipped: shipped, pendingShip: pendingShip, unclaimed: unclaimed });
+        console.log('📊 管理端統計:', {inbound, shipped, pendingShip, unclaimed});
       } catch(e) { console.error('loadDailyStats:', e); }
     }
     if(loggedIn) { loadDailyStats(); loadInboundDetail(); loadPerformance(); }
