@@ -163,8 +163,8 @@ const NAV = [
     { k: "fin-expense", l: "支出管理" },
     { k: "fin-salary", l: "薪資支出" },
     { k: "fin-collection", l: "收款紀錄" },
-    { k: "fin-unpaid", l: "未收款管理" },
     { k: "fin-profit", l: "利潤分析" },
+    { k: "fin-unpaid", l: "未收款管理" },
   ]},
   { k: "customers", l: "客戶管理", sub: [
     { k: "cust-list", l: "客戶列表" },
@@ -307,21 +307,21 @@ function KshipApp() {
   const initRecords = () => { try { var s=JSON.parse(localStorage.getItem('hj_salary_records')); if(s&&s.length) return s; } catch(e){} return []; };
   const [records, setRecords] = useState(initRecords);
 
-  // ── 年度/月報表（2023/6~2026/5，可雙擊編輯，localStorage 暫存）──
+  // ── 年度/月報表（2023/6~2026/6手動，2026/7起自動）──
   const initAnnual = () => {
     var rows = [];
     for(var y=2023;y<=2026;y++) {
-      var sm = y===2023?6:1, em = y===2026?5:12;
+      var sm = y===2023?6:1, em = y===2026?6:12;
       for(var m=sm;m<=em;m++) rows.push({month:y+'/'+String(m).padStart(2,'0'), rev:0, exp:0, weight:0, shipCount:0});
     }
-    try { var saved=JSON.parse(localStorage.getItem('hj_annual_v2')); if(saved&&saved.length&&saved[0].weight!==undefined) return saved; } catch(e){}
+    try { var saved=JSON.parse(localStorage.getItem('hj_annual_v3')); if(saved&&saved.length&&saved[0].weight!==undefined) return saved; } catch(e){}
     return rows;
   };
   const [annualData, setAnnualData] = useState(initAnnual);
   const [editCell, setEditCell] = useState(null);
   const [editVal, setEditVal2] = useState("");
   const [expandedYear, setExpandedYear] = useState(null);
-  const saveAnnual = (data) => { setAnnualData(data); try{localStorage.setItem('hj_annual_v2',JSON.stringify(data));}catch(e){} };
+  const saveAnnual = (data) => { setAnnualData(data); try{localStorage.setItem('hj_annual_v3',JSON.stringify(data));}catch(e){} };
   const handleAnnualDblClick = (rowIdx, field) => { setEditCell({row:rowIdx,field}); setEditVal2(String(annualData[rowIdx][field]||0)); };
   const handleAnnualSave = () => { if(!editCell) return; var d=[...annualData]; d[editCell.row]={...d[editCell.row],[editCell.field]:parseFloat(editVal)||0}; saveAnnual(d); setEditCell(null); };
   // 按年分組
@@ -332,12 +332,14 @@ function KshipApp() {
   const annualTotalExp = annualData.reduce((s,r)=>s+r.exp,0);
   const annualTotalWeight = annualData.reduce((s,r)=>s+(r.weight||0),0);
   const annualTotalShip = annualData.reduce((s,r)=>s+(r.shipCount||0),0);
-  // 支出管理連動：當月報表 exp 更新時自動帶入
-  const syncExpToAnnual = () => {
-    var {monthStr}=getKSTDates();
-    var d=[...annualData];
-    var idx=d.findIndex(r=>r.month===monthStr.replace('-','/'));
-    if(idx>=0&&(fin.monthExpTotal||0)>0) { d[idx].exp=fin.monthExpTotal||0; saveAnnual(d); }
+  // 2026/07起自動同步當月 Supabase 數據
+  const autoSyncCurrentMonth = () => {
+    var {monthStr}=getKSTDates(); var m=monthStr.replace('-','/');
+    if(m<'2026/07') return;
+    var d=[...annualData]; var idx=d.findIndex(r=>r.month===m);
+    if(idx<0) d.push({month:m,rev:fin.monthRev||0,exp:fin.monthExpTotal||0,weight:0,shipCount:0});
+    else { d[idx].rev=fin.monthRev||0; d[idx].exp=fin.monthExpTotal||0; }
+    saveAnnual(d);
   };
 
   // ── Financial Data（Supabase 連動）──
@@ -439,7 +441,7 @@ function KshipApp() {
     } catch(e) { console.error('loadFinancials error:', e); }
   }
 
-  useEffect(function(){ if(loggedIn) loadFinancials(); }, [loggedIn]);
+  useEffect(function(){ if(loggedIn) { loadFinancials(); loadInboundDetail(); } }, [loggedIn]);
 
   // ── 支出 CRUD → Supabase ──
   const addExpense = async (category, amount, note, date) => {
@@ -462,6 +464,18 @@ function KshipApp() {
   const [custStats, setCustStats] = useState({total:0,active:0,vip:0});
   const [custSearch, setCustSearch] = useState("");
   const [custFilter, setCustFilter] = useState("全部");
+  const [inboundDetail, setInboundDetail] = useState([]);
+  
+  async function loadInboundDetail() {
+    if(!sb) return;
+    try {
+      var now=new Date(),kstMs=now.getTime()+(9*60+now.getTimezoneOffset())*60000,kst=new Date(kstMs);
+      var start=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth(),kst.getUTCDate())-9*3600000).toISOString();
+      var end=new Date(new Date(start).getTime()+86400000).toISOString();
+      var {data}=await sb.from('packages').select('*').eq('status','arrived').gte('scanned_at',start).lt('scanned_at',end).order('scanned_at',{ascending:false});
+      setInboundDetail(data||[]);
+    } catch(e){ console.error('loadInboundDetail:',e); }
+  }
   const filteredCust = custList.filter(c => {
     var matchSearch = !custSearch || c.name.includes(custSearch) || c.code.includes(custSearch.toUpperCase()) || (c.phone||"").includes(custSearch);
     var matchFilter = custFilter==="全部" || c.grade===custFilter;
@@ -713,13 +727,13 @@ function KshipApp() {
           <h3 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 14px", color: "#1e2a3a" }}>今日營運</h3>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {[
-              { label: "今日入庫", value: String(dailyStats.inbound), unit: "件", color: "#34537d" },
+              { label: "今日入庫", value: String(dailyStats.inbound), unit: "件", color: "#34537d", click: ()=>{loadInboundDetail();switchTab("dash-inbound");} },
               { label: "今日出貨", value: String(dailyStats.shipped), unit: "件", color: "#5b9e6f" },
               { label: "待出貨", value: String(dailyStats.pendingShip), unit: "件", color: "#c4953a" },
               { label: "異常件", value: String(dailyStats.unclaimed), unit: "件", color: "#c0504d" },
             ].map((s, i) => (
-              <div key={i} style={{ background: "#f5f8fc", borderRadius: 6, padding: "12px", textAlign: "center" }}>
-                <div style={{ fontSize: 11, color: "#8a9ab0", marginBottom: 4 }}>{s.label}</div>
+              <div key={i} onClick={s.click||null} style={{ background: "#f5f8fc", borderRadius: 6, padding: "12px", textAlign: "center", cursor: s.click?"pointer":"default" }}>
+                <div style={{ fontSize: 11, color: "#8a9ab0", marginBottom: 4 }}>{s.label}{s.click?<span style={{fontSize:10}}> ▶</span>:null}</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}<span style={{ fontSize: 12, fontWeight: 400, marginLeft: 2 }}>{s.unit}</span></div>
               </div>
             ))}
@@ -932,6 +946,52 @@ function KshipApp() {
             )}
 
             {/* 員工概況 */}
+            {/* 今日入庫明細 */}
+            {tab === "dash-inbound" && (
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <button onClick={()=>switchTab("dash-ops")} style={{background:"none",border:"1px solid #dce3ed",borderRadius:6,padding:"6px 14px",fontSize:13,cursor:"pointer",fontFamily:"inherit",color:"#34537d"}}>← 返回儀表板</button>
+                  <button onClick={loadInboundDetail} style={{background:"#34537d",border:"none",borderRadius:6,padding:"6px 14px",fontSize:13,cursor:"pointer",fontFamily:"inherit",color:"#fff"}}>🔄 重新整理</button>
+                </div>
+                <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
+                  <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontWeight:600,fontSize:15}}>📦 今日入庫明細</span>
+                    <span style={{fontSize:13,fontWeight:700}}>{inboundDetail.length} 件</span>
+                  </div>
+                  <div style={{padding:0}}>
+                    {inboundDetail.length===0 ? (
+                      <div style={{padding:40,textAlign:"center",color:"#8a9ab0",fontSize:14}}>今日尚無入庫包裹</div>
+                    ) : (
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+                        <thead><tr>{["單號","會員","重量","貨架","處理人","時間"].map(h=><th key={h} style={{padding:"8px 12px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",background:"#f8fafc"}}>{h}</th>)}</tr></thead>
+                        <tbody>
+                          {inboundDetail.map((p,i)=>{
+                            var t=p.scanned_at?new Date(p.scanned_at).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit"}):"—";
+                            return(<tr key={i} style={{borderBottom:"1px solid #f0f2f5"}}>
+                              <td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:12}}>{(p.tracking_no||"").substring(0,18)}</td>
+                              <td style={{padding:"8px 12px",fontWeight:500}}>{p.member_code||"—"}</td>
+                              <td style={{padding:"8px 12px"}}>{p.weight_kg||0} kg</td>
+                              <td style={{padding:"8px 12px"}}><span style={{background:"#e8edf4",padding:"2px 8px",borderRadius:4,fontSize:12,fontWeight:600}}>{p.shelf||"—"}</span></td>
+                              <td style={{padding:"8px 12px",color:"#4a5568"}}>{p.processed_by_name||"—"}</td>
+                              <td style={{padding:"8px 12px",color:"#8a9ab0"}}>{t}</td>
+                            </tr>);
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                  {[
+                    {l:"總件數",v:inboundDetail.length+" 件",c:"#34537d"},
+                    {l:"總重量",v:(inboundDetail.reduce((s,p)=>s+(p.weight_kg||0),0)).toFixed(1)+" kg",c:"#7b6ba5"},
+                    {l:"處理人數",v:[...new Set(inboundDetail.map(p=>p.processed_by_name).filter(Boolean))].length+" 人",c:"#5b9e6f"}
+                  ].map((s,i)=>(
+                    <div key={i} style={{background:"#fff",borderRadius:6,padding:10,textAlign:"center",border:"1px solid #dce3ed"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
+                </div>
+              </div>
+            )}
+
             {/* 財務概況 */}
             {tab === "dash-finance" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1279,32 +1339,36 @@ function KshipApp() {
 
             {/* ═══ 月報表 ═══ */}
             {tab === "fin-monthly" && (
-              <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
-                <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontWeight:600,fontSize:15}}>月報表</span>
-                  <select style={{background:"rgba(255,255,255,.15)",color:"#fff",border:"1px solid rgba(255,255,255,.3)",borderRadius:6,padding:"6px 10px",fontSize:13,fontFamily:"inherit"}}>
-                    <option>2026/05</option><option>2026/04</option><option>2026/03</option><option>2026/02</option><option>2026/01</option>
-                  </select>
-                </div>
-                <div style={{padding:18,fontSize:13}}>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
-                    {[{l:"總營收",v:w(fin.monthRev),c:"#34537d"},{l:"總支出",v:w(fin.monthExpTotal||0),c:"#c0504d"},{l:"淨利潤",v:w(fin.monthProfit),c:"#5b9e6f"},{l:"利潤率",v:fin.monthRev?(Math.round(fin.monthProfit/fin.monthRev*1000)/10)+"%":"0%",c:"#5b9e6f"}].map((s,i)=>(
-                      <div key={i} style={{background:"#f5f8fc",borderRadius:6,padding:12,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
+                  <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontWeight:600,fontSize:15}}>📋 {curMonth} 月報表</span>
+                    <span style={{fontSize:12,opacity:.8}}>即時連動 Supabase</span>
                   </div>
-                  <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
-                    <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>營運數據</div>
-                    {[{l:"出貨件數",v:"0 件"},{l:"客戶數",v:"—"},{l:"新增客戶",v:"—"}].map((r,i)=>(
-                      <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.l}</span><span style={{fontWeight:600}}>{r.v}</span></div>))}
-                  </div>
-                  <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
-                    <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>營收明細</div>
-                    {[{l:"出貨",v:fin.monthRev},{l:"代購",v:0},{l:"其他",v:0}].map((r,i)=>(
-                      <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.l}</span><span style={{fontWeight:600}}>{w(r.v)}</span></div>))}
-                  </div>
-                  <div>
-                    <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>支出明細</div>
-                    {[{l:"薪資",v:12300000},{l:"租金",v:2500000},{l:"物流",v:3200000},{l:"其他",v:800000}].map((r,i)=>(
-                      <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.l}</span><span style={{fontWeight:600}}>{w(r.v)}</span></div>))}
+                  <div style={{padding:18,fontSize:13}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:16}}>
+                      {[{l:"營收",v:w(fin.monthRev),c:"#34537d"},{l:"支出",v:w(fin.monthExpTotal||0),c:"#c0504d"},{l:"利潤",v:w(fin.monthProfit),c:"#5b9e6f"},{l:"利潤率",v:fin.monthRev?(Math.round(fin.monthProfit/fin.monthRev*1000)/10)+"%":"0%",c:"#5b9e6f"},{l:"出貨總重量",v:(inboundDetail.reduce((s,p)=>s+(p.weight_kg||0),0)).toFixed(1)+" kg",c:"#7b6ba5"},{l:"入庫件數",v:String(dailyStats.inbound||0)+" 件（今日）",c:"#34537d"}].map((s,i)=>(
+                        <div key={i} style={{background:"#f5f8fc",borderRadius:6,padding:10,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:14,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
+                    </div>
+                    <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
+                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>營收明細</div>
+                      {[{l:"出貨收入",v:fin.monthRev},{l:"代購收入",v:0},{l:"其他收入",v:0}].map((r,i)=>(
+                        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.l}</span><span style={{fontWeight:600}}>{w(r.v)}</span></div>))}
+                    </div>
+                    <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
+                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>支出明細（from Supabase expenses）</div>
+                      {expenses.length===0 ? <div style={{color:"#8a9ab0",padding:"4px 0"}}>本月尚無支出紀錄</div> :
+                      expenses.map((r,i)=>(
+                        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.label}</span><span style={{fontWeight:600,color:"#c0504d"}}>{w(r.amount)}</span></div>))}
+                      <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"1px solid #dce3ed",marginTop:6,fontWeight:700}}><span>支出合計</span><span style={{color:"#c0504d"}}>{w(fin.monthExpTotal||0)}</span></div>
+                    </div>
+                    <div>
+                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>薪資支出（from 薪資管理）</div>
+                      {records.filter(r=>r.month===curMonth).length===0 ? <div style={{color:"#8a9ab0",padding:"4px 0"}}>本月尚未儲存薪資</div> :
+                      records.filter(r=>r.month===curMonth).map((r,i)=>(
+                        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.empName}</span><span style={{fontWeight:600}}>{w(r.totalPayable)}</span></div>))}
+                      <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"1px solid #dce3ed",marginTop:6,fontWeight:700}}><span>薪資合計</span><span>{w(records.filter(r=>r.month===curMonth).reduce((s,r)=>s+r.totalPayable,0))}</span></div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1366,7 +1430,6 @@ function KshipApp() {
                   {[{l:"總營收",v:w(annualTotalRev),c:"#34537d"},{l:"總支出",v:w(annualTotalExp),c:"#c0504d"},{l:"總利潤",v:w(annualTotalRev-annualTotalExp),c:"#5b9e6f"},{l:"總重量",v:(annualTotalWeight/1000).toFixed(1)+" t",c:"#7b6ba5"},{l:"總出貨",v:annualTotalShip+" 件",c:"#34537d"},{l:"利潤率",v:annualTotalRev?(Math.round((annualTotalRev-annualTotalExp)/annualTotalRev*1000)/10)+"%":"0%",c:"#5b9e6f"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:6,padding:10,textAlign:"center",border:"1px solid #dce3ed"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
-                <button onClick={syncExpToAnnual} style={{background:"#5b9e6f",color:"#fff",border:"none",borderRadius:8,padding:"12px",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>🔄 同步本月支出到月報表</button>
               </div>
             )}
 
