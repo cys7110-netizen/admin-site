@@ -277,8 +277,8 @@ function KshipApp() {
 
   const PASSWORDS = {
     "hanji2020/": "boss",
-    "manager2020": "manager",
-    "staff2020": "staff",
+    "0000": "manager",
+    "1111": "staff",
   };
 
   const handleLogin = () => {
@@ -306,6 +306,25 @@ function KshipApp() {
   const [calcMonthSal, setCalcMonthSal] = useState("");
   const [saved, setSaved] = useState(null);
   const [records, setRecords] = useState([]);
+
+  // ── 年度報表（2023/6~2026/5，可雙擊編輯，localStorage 暫存）──
+  const initAnnual = () => {
+    var rows = [];
+    for(var y=2023;y<=2026;y++) {
+      var sm = y===2023?6:1, em = y===2026?5:12;
+      for(var m=sm;m<=em;m++) rows.push({month:y+'/'+String(m).padStart(2,'0'), rev:0, exp:0});
+    }
+    try { var saved=JSON.parse(localStorage.getItem('hj_annual')); if(saved&&saved.length) return saved; } catch(e){}
+    return rows;
+  };
+  const [annualData, setAnnualData] = useState(initAnnual);
+  const [editCell, setEditCell] = useState(null);
+  const [editVal, setEditVal2] = useState("");
+  const saveAnnual = (data) => { setAnnualData(data); try{localStorage.setItem('hj_annual',JSON.stringify(data));}catch(e){} };
+  const handleAnnualDblClick = (rowIdx, field) => { setEditCell({row:rowIdx,field}); setEditVal2(String(annualData[rowIdx][field]||0)); };
+  const handleAnnualSave = () => { if(!editCell) return; var d=[...annualData]; d[editCell.row]={...d[editCell.row],[editCell.field]:parseInt(editVal)||0}; saveAnnual(d); setEditCell(null); };
+  const annualTotalRev = annualData.reduce((s,r)=>s+r.rev,0);
+  const annualTotalExp = annualData.reduce((s,r)=>s+r.exp,0);
 
   // ── Financial Data（Supabase 連動）──
   const [fin, setFin] = useState({
@@ -1129,7 +1148,7 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>未收款客戶</h3>
-                  {[{n:"（從 finance_records 計算）",a:0,d:0,last:"—",c:"#8a9ab0"}].map((r,i)=>(
+                  {[{n:"暫無未付款記錄",a:0,d:0,last:"—",c:"#8a9ab0"}].map((r,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #f0f2f5":"none",gap:10,flexWrap:"wrap",fontSize:13}}>
                       <span style={{width:8,height:8,borderRadius:"50%",background:r.c,flexShrink:0}}/>
                       <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.n}</span>
@@ -1316,23 +1335,32 @@ function KshipApp() {
             {/* ═══ 年報表 ═══ */}
             {tab === "fin-yearly" && (
               <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
-                <div style={{padding:"14px 18px",background:"#34537d",color:"#fff"}}><span style={{fontWeight:600,fontSize:15}}>2026 年度報表</span></div>
+                <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontWeight:600,fontSize:15}}>年度報表（2023/6 ~ 2026/5）</span><span style={{fontSize:11,opacity:.7}}>雙擊數字可編輯</span></div>
                 <div style={{padding:18,overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:500}}>
-                    <thead><tr>{["月份","營收","支出","利潤","利潤率"].map(h=><th key={h} style={{padding:"8px",textAlign:h==="月份"?"left":"right",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>{h}</th>)}</tr></thead>
+                    <thead><tr>{["月份","營收","支出","利潤","利潤率"].map(h=><th key={h} style={{padding:"8px",textAlign:h==="月份"?"left":"right",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed"}}>{h}</th>)}</tr></thead>
                     <tbody>
-                      {[{m:"01月",r:26200000,e:11000000,p:15200000,pr:"58%"},{m:"02月",r:28500000,e:11700000,p:16800000,pr:"59%"},{m:"03月",r:29700000,e:11600000,p:18100000,pr:"61%"},{m:"04月",r:29200000,e:11700000,p:17500000,pr:"60%"},{m:"05月",r:32450000,e:12800000,p:19650000,pr:"60.5%"}].map((r,i)=>(
-                        <tr key={i} style={{borderBottom:"1px solid #f0f2f5",background:i===4?"#f5f8fc":"transparent"}}>
-                          <td style={{padding:8,fontWeight:i===4?700:400}}>{r.m}</td>
-                          <td style={{padding:8,textAlign:"right"}}>{w(r.r)}</td>
-                          <td style={{padding:8,textAlign:"right",color:"#c0504d"}}>{w(r.e)}</td>
-                          <td style={{padding:8,textAlign:"right",color:"#5b9e6f",fontWeight:600}}>{w(r.p)}</td>
-                          <td style={{padding:8,textAlign:"right"}}>{r.pr}</td></tr>))}
+                      {annualData.map((r,i)=>{
+                        var profit=r.rev-r.exp;
+                        var rate=r.rev>0?Math.round(profit/r.rev*100):0;
+                        var isEdit=editCell&&editCell.row===i;
+                        return(<tr key={i} style={{borderBottom:"1px solid #f0f2f5",background:r.month.endsWith("/01")?"#f5f8fc":"transparent"}}>
+                          <td style={{padding:8,fontWeight:500,fontSize:12}}>{r.month}</td>
+                          <td style={{padding:8,textAlign:"right",cursor:"pointer"}} onDoubleClick={()=>handleAnnualDblClick(i,"rev")}>
+                            {isEdit&&editCell.field==="rev"?<input autoFocus value={editVal} onChange={e=>setEditVal2(e.target.value)} onBlur={handleAnnualSave} onKeyDown={e=>{if(e.key==="Enter")handleAnnualSave()}} style={{width:90,textAlign:"right",border:"1.5px solid #34537d",borderRadius:4,padding:"2px 6px",fontSize:13,outline:"none"}}/>:w(r.rev)}
+                          </td>
+                          <td style={{padding:8,textAlign:"right",color:"#c0504d",cursor:"pointer"}} onDoubleClick={()=>handleAnnualDblClick(i,"exp")}>
+                            {isEdit&&editCell.field==="exp"?<input autoFocus value={editVal} onChange={e=>setEditVal2(e.target.value)} onBlur={handleAnnualSave} onKeyDown={e=>{if(e.key==="Enter")handleAnnualSave()}} style={{width:90,textAlign:"right",border:"1.5px solid #c0504d",borderRadius:4,padding:"2px 6px",fontSize:13,outline:"none"}}/>:w(r.exp)}
+                          </td>
+                          <td style={{padding:8,textAlign:"right",color:profit>=0?"#5b9e6f":"#c0504d",fontWeight:600}}>{w(profit)}</td>
+                          <td style={{padding:8,textAlign:"right"}}>{rate}%</td>
+                        </tr>);
+                      })}
                     </tbody>
                   </table>
                   <div style={{borderTop:"2px solid #34537d",marginTop:8,paddingTop:12}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                      {[{l:"年度總營收",v:w(fin.monthRev*12||0),c:"#34537d"},{l:"年度總支出",v:w((fin.monthExpTotal||0)*12),c:"#c0504d"},{l:"年度總利潤",v:w(fin.monthProfit*12||0),c:"#5b9e6f"},{l:"平均利潤率",v:"59.7%",c:"#5b9e6f"}].map((s,i)=>(
+                      {[{l:"總營收",v:w(annualTotalRev),c:"#34537d"},{l:"總支出",v:w(annualTotalExp),c:"#c0504d"},{l:"總利潤",v:w(annualTotalRev-annualTotalExp),c:"#5b9e6f"},{l:"平均利潤率",v:annualTotalRev?(Math.round((annualTotalRev-annualTotalExp)/annualTotalRev*1000)/10)+"%":"0%",c:"#5b9e6f"}].map((s,i)=>(
                         <div key={i} style={{background:"#f5f8fc",borderRadius:6,padding:10,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                     </div>
                   </div>
@@ -1468,7 +1496,7 @@ function KshipApp() {
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:16,border:`1px solid ${s.c==="#c0504d"?"#f0d0ce":"#dce3ed"}`,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  {[{n:"（從 finance_records 計算）",a:0,cnt:0,oldest:"—",days:0,c:"#8a9ab0"}].map((r,i)=>(
+                  {[{n:"暫無未付款記錄",a:0,cnt:0,oldest:"—",days:0,c:"#8a9ab0"}].map((r,i)=>(
                     <div key={i} style={{padding:"12px 0",borderBottom:i<4?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",alignItems:"center",gap:10,fontSize:13,flexWrap:"wrap"}}>
                         <span style={{width:8,height:8,borderRadius:"50%",background:r.c,flexShrink:0}}/>
@@ -1664,7 +1692,7 @@ function KshipApp() {
                       <thead><tr>{["日期","員工","假別","天數","狀態"].map(h=><th key={h} style={{padding:8,textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>{h}</th>)}</tr></thead>
                       <tbody>
                         {[
-                          {d:"—",n:"（出勤紀錄需建 attendance 表）",t:"—",days:"—",s:"—",sc:"#8a9ab0",bg:"#f5f8fc"},
+                          {d:"—",n:"暫無請假紀錄",t:"—",days:"—",s:"暫無",sc:"#8a9ab0",bg:"#f5f8fc"},
                         ].map((r,i)=>(
                           <tr key={i} style={{borderBottom:"1px solid #f0f2f5"}}>
                             <td style={{padding:8,color:"#8a9ab0"}}>{r.d}</td>
