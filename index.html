@@ -311,6 +311,7 @@ function KshipApp() {
   const [saved, setSaved] = useState(null);
   const initRecords = () => { try { var s=JSON.parse(localStorage.getItem('hj_salary_records')); if(s&&s.length) return s; } catch(e){} return []; };
   const [records, setRecords] = useState(initRecords);
+  const [salMonth, setSalMonth] = useState(curMonth);
 
   // ── 年度/月報表（2023/6~2026/6手動，2026/7起自動）──
   const initAnnual = () => {
@@ -687,7 +688,7 @@ function KshipApp() {
   if (calcEmp) { if (isFT) { totalSalary = monthSal; totalPayable = monthSal + bonus - otherExp; } else { basePay = calcEmp.rate * hours; otPay = 5000 * otHours; totalSalary = basePay + otPay; totalPayable = totalSalary + bonus - otherExp; } }
   const tax = calcTax(transfer);
   const cashPay = totalPayable - transfer;
-  const handleSave = () => { if (!calcEmp) return; var rec={ id: Date.now(), month: curMonth, empName: calcEmp.name, empNo: calcEmp.empNo, empType: calcEmp.type, isFT, rate: calcEmp.rate, hours, otHours, monthSal, basePay, otPay, totalSalary, bonus, otherExp, totalPayable, transfer, incomeTax: tax.incomeTax, localTax: tax.localTax, netTransfer: tax.net, cashPay }; var newRecs=[...records,rec]; setRecords(newRecs); try{localStorage.setItem('hj_salary_records',JSON.stringify(newRecs));}catch(e){} setSaved(rec); saveSalaryToCloud(newRecs); };
+  const handleSave = () => { if (!calcEmp) return; var rec={ id: Date.now(), month: salMonth, empName: calcEmp.name, empNo: calcEmp.empNo, empType: calcEmp.type, isFT, rate: calcEmp.rate, hours, otHours, monthSal, basePay, otPay, totalSalary, bonus, otherExp, totalPayable, transfer, incomeTax: tax.incomeTax, localTax: tax.localTax, netTransfer: tax.net, cashPay }; var newRecs=[...records,rec]; setRecords(newRecs); try{localStorage.setItem('hj_salary_records',JSON.stringify(newRecs));}catch(e){} setSaved(rec); saveSalaryToCloud(newRecs); };
   const clearCalc = () => { setCalcEmpId(""); setCalcHours(""); setCalcOtHours(""); setCalcBonus(""); setCalcOther(""); setCalcTransfer(""); setCalcMonthSal(""); setSaved(null); };
 
   const monthTotals = {}; records.forEach(r => { monthTotals[r.month] = (monthTotals[r.month] || 0) + r.totalPayable; });
@@ -1323,19 +1324,32 @@ function KshipApp() {
             {/* ═══ 薪資支出 ═══ */}
             {tab === "fin-salary" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontSize:14,fontWeight:600}}>本月薪資總支出</span>
-                  <span style={{fontSize:22,fontWeight:700,color:"#34537d"}}>{w(records.filter(r=>r.month===curMonth).reduce((s,r)=>s+r.totalPayable,0))}</span>
+                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <span style={{fontSize:14,fontWeight:600}}>薪資月份</span>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {["2026/05","2026/06","2026/07","2026/08","2026/09","2026/10","2026/11","2026/12"].filter(m=>m<=curMonth||m<="2026/06").map(m=>(
+                        <button key={m} onClick={()=>setSalMonth(m)} style={{padding:"6px 14px",borderRadius:20,border:salMonth===m?"2px solid #34537d":"1px solid #dce3ed",background:salMonth===m?"#34537d":"#fff",color:salMonth===m?"#fff":"#4a5568",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{m.split('/')[1]}月</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:13,color:"#8a9ab0"}}>{salMonth} 薪資總支出</span>
+                    <span style={{fontSize:22,fontWeight:700,color:"#34537d"}}>{w(records.filter(r=>r.month===salMonth).reduce((s,r)=>s+r.totalPayable,0))}</span>
+                  </div>
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                    <h3 style={{fontSize:14,fontWeight:600,margin:0,color:"#34537d"}}>{curMonth} 薪資明細</h3>
-                    <div style={{display:"flex",gap:8,alignItems:"center"}}><button onClick={saveSalaryToCloud} style={{background:"rgba(27,79,138,0.08)",border:"1px solid rgba(27,79,138,0.15)",color:"#34537d",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>💾 儲存到雲端</button><span style={{fontSize:11,color:"#8a9ab0"}}>儲存後同步至 Supabase</span></div>
+                    <h3 style={{fontSize:14,fontWeight:600,margin:0,color:"#34537d"}}>{salMonth} 薪資明細</h3>
+                    <button onClick={()=>saveSalaryToCloud()} style={{background:"rgba(27,79,138,0.08)",border:"1px solid rgba(27,79,138,0.15)",color:"#34537d",fontSize:11,padding:"5px 12px",borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>儲存</button>
                   </div>
-                  {records.filter(r=>r.month===curMonth).length===0 ? (
-                    <div style={{textAlign:"center",padding:30,color:"#8a9ab0",fontSize:13}}>本月尚未儲存任何薪資紀錄<br/>請至「人資管理 → 薪資管理」計算並儲存</div>
+                  {records.filter(r=>r.month===salMonth).length===0 ? (
+                    <div style={{textAlign:"center",padding:30,color:"#8a9ab0",fontSize:13}}>
+                      {salMonth} 尚未儲存任何薪資紀錄<br/>
+                      請先選擇上方月份，再至「人資管理 → 薪資管理」計算並儲存
+                    </div>
                   ) : (
-                    records.filter(r=>r.month===curMonth).map((r,i)=>(
+                    records.filter(r=>r.month===salMonth).map((r,i)=>(
                       <div key={r.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #f0f2f5",gap:10,flexWrap:"wrap",fontSize:13}}>
                         <span style={{minWidth:45,color:"#8a9ab0"}}>{r.empNo||"—"}</span>
                         <span style={{flex:1,fontWeight:600}}>{r.empName}</span>
@@ -1345,8 +1359,7 @@ function KshipApp() {
                       </div>))
                   )}
                   <div style={{borderTop:"2px solid #34537d",marginTop:8,paddingTop:10,fontSize:13}}>
-                    <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span>已發放（{records.filter(r=>r.month===curMonth).length} 人）</span><span style={{fontWeight:700,color:"#5b9e6f"}}>{w(records.filter(r=>r.month===curMonth).reduce((s,r)=>s+r.totalPayable,0))}</span></div>
-                    <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span>未發放（{emps.filter(e=>!e.resigned).length - records.filter(r=>r.month===curMonth).length} 人）</span><span style={{fontWeight:700,color:"#c4953a"}}>{w(0)}</span></div>
+                    <div style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span>已發放（{records.filter(r=>r.month===salMonth).length} 人）</span><span style={{fontWeight:700,color:"#5b9e6f"}}>{w(records.filter(r=>r.month===salMonth).reduce((s,r)=>s+r.totalPayable,0))}</span></div>
                   </div>
                 </div>
                 {records.length > 0 && (
@@ -2259,8 +2272,13 @@ function KshipApp() {
               <div>
                 {!saved ? (
                   <div style={{ background: "#fff", borderRadius: 8, padding: mobile ? 14 : 20, border: "1px solid #dce3ed" }}>
-                    <div style={{ marginBottom: 16, padding: "10px 14px", background: "#34537d", borderRadius: 6, color: "#fff" }}>
-                      <span style={{ fontWeight: 600, fontSize: 15, letterSpacing: 1 }}>{curMonth}</span><span style={{ fontSize: 12, opacity: .7, marginLeft: 8 }}>薪資計算</span>
+                    <div style={{ marginBottom: 16, padding: "10px 14px", background: "#34537d", borderRadius: 6, color: "#fff", display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
+                      <div><span style={{ fontWeight: 600, fontSize: 15, letterSpacing: 1 }}>{salMonth}</span><span style={{ fontSize: 12, opacity: .7, marginLeft: 8 }}>薪資計算</span></div>
+                      <div style={{display:"flex",gap:4}}>
+                        {["2026/05","2026/06","2026/07","2026/08","2026/09","2026/10","2026/11","2026/12"].filter(m=>m<=curMonth||m<="2026/06").map(m=>(
+                          <button key={m} onClick={()=>setSalMonth(m)} style={{padding:"3px 10px",borderRadius:12,border:salMonth===m?"1.5px solid #fff":"1px solid rgba(255,255,255,0.3)",background:salMonth===m?"rgba(255,255,255,0.2)":"transparent",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{m.split('/')[1]}月</button>
+                        ))}
+                      </div>
                     </div>
                     <div style={{ marginBottom: 14 }}>
                       <span style={{ fontSize: 11, color: "#7a8a9e", fontWeight: 500, display: "block", marginBottom: 4 }}>選擇員工</span>
