@@ -257,18 +257,17 @@ function KshipApp() {
         var start = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000).toISOString();
         var end = new Date(new Date(start).getTime() + 86400000).toISOString();
 
-        // 今日入庫：撈全部包裹用 JS 篩選（最可靠）
-        var { data:allPkg } = await sb.from('packages').select('id,status,created_at,scanned_at,updated_at');
+        // 撈全部包裹 + 任務（select('*') 避免欄位不存在）
+        var { data:allPkg } = await sb.from('packages').select('*');
         var inbound = (allPkg||[]).filter(function(p){
           return (p.created_at && p.created_at >= start && p.created_at < end)
               || (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
               || (p.updated_at && p.updated_at >= start && p.updated_at < end);
         }).length;
         var unclaimed = (allPkg||[]).filter(function(p){ return p.status === 'unclaimed'; }).length;
-        // 今日出貨 + 待出貨
-        var { data:allTasks } = await sb.from('tasks').select('id,task_type,type,status,created_at');
+        var { data:allTasks } = await sb.from('tasks').select('*');
         var shipped = (allTasks||[]).filter(function(t){
-          return (t.task_type==='ship'||t.type==='ship') && t.status==='completed'
+          return (t.task_type==='ship'||t.type==='ship') && (t.status==='completed'||t.status==='paid')
             && t.created_at && t.created_at >= start && t.created_at < end;
         }).length;
         var pendingShip = (allTasks||[]).filter(function(t){
@@ -408,7 +407,10 @@ function KshipApp() {
   // ── Financial Data（Supabase 連動）──
   const [fin, setFin] = useState({
     todayRev:0, monthRev:0, todayPay:0, outstanding:0, monthProfit:0,
-    recentTx:[], recentPay:[], monthlyData:[]
+    recentTx:[], recentPay:[], monthlyData:[],
+    shipRevenue:0, finRevenue:0,
+    unpaidList:[], over30Amount:0, unpaidCustCount:0,
+    monthlyTrend:[], monthExpTotal:0
   });
   const [expenses, setExpenses] = useState([]);
   const [editingExpId, setEditingExpId] = useState(null);
@@ -469,9 +471,53 @@ function KshipApp() {
         }
       });
 
-      // 2) 支出 expenses
+      // 1b) 出貨運費 → 加入營收 + 追蹤未收款
+      var { data: shipTasks } = await sb.from('tasks').select('*');
+      var allShipTasks = (shipTasks||[]).filter(function(t){ return (t.task_type==='ship'||t.type==='ship') && t.ship_cost > 0; });
+      var shipRevMonth = 0;
+      allShipTasks.filter(function(t){ return t.status==='completed'||t.status==='paid'; }).forEach(function(t){
+        var d = (t.created_at||'').substring(0,10);
+        var m = (t.created_at||'').substring(0,7);
+        if(d === todayStr) todayRev += t.ship_cost;
+        if(m === monthStr) { monthRev += t.ship_cost; shipRevMonth += t.ship_cost; }
+      });
+
+      // 1c) 未收款客戶分析（status=completed 且 ship_cost > 0 表示已出貨但未收款）
+      var unpaidTasks = allShipTasks.filter(function(t){ return t.status==='completed' && t.ship_cost > 0; });
+      var now = new Date();
+      var unpaidByCustomer = {};
+      var over30Total = 0;
+      unpaidTasks.forEach(function(t){
+        var mc = t.member_code || '未知';
+        if(!unpaidByCustomer[mc]) unpaidByCustomer[mc] = {code:mc,amount:0,count:0,oldest:null};
+        unpaidByCustomer[mc].amount += t.ship_cost;
+        unpaidByCustomer[mc].count++;
+        var created = t.created_at ? new Date(t.created_at) : now;
+        var days = Math.max(0, Math.floor((now - created)/86400000));
+        if(!unpaidByCustomer[mc].oldest || days > unpaidByCustomer[mc].days) {
+          unpaidByCustomer[mc].oldest = (t.created_at||'').substring(5,10);
+          unpaidByCustomer[mc].days = days;
+        }
+        if(days > 30) over30Total += t.ship_cost;
+      });
+      var unpaidList = Object.values(unpaidByCustomer).sort(function(a,b){ return b.amount - a.amount; });
+
+      // 2) 支出 expenses（提前載入，趨勢計算需要）
       var { data: expRows } = await sb.from('expenses').select('*').order('created_at',{ascending:false});
       expRows = expRows || [];
+
+      // 1d) 每月營收/利潤趨勢（最近5個月）
+      var monthlyTrend = [];
+      for(var mi = 4; mi >= 0; mi--) {
+        var dt = new Date(now.getFullYear(), now.getMonth() - mi, 1);
+        var ms = dt.getFullYear() + '-' + (dt.getMonth()+1<10?'0':'') + (dt.getMonth()+1);
+        var mRev = 0, mExp = 0;
+        allFin.forEach(function(r){ if(r.type==='revenue' && (r.date||'').substring(0,7)===ms) mRev += r.amount; });
+        allShipTasks.filter(function(t){ return (t.status==='completed'||t.status==='paid') && (t.created_at||'').substring(0,7)===ms; }).forEach(function(t){ mRev += t.ship_cost; });
+        expRows.forEach(function(r){ if((r.date||'').substring(0,7)===ms) mExp += r.amount; });
+        monthlyTrend.push({m:ms.replace('-','/'), rev:mRev, exp:mExp, profit:mRev-mExp, rate:mRev>0?Math.round((mRev-mExp)/mRev*1000)/10:0});
+      }
+
       // 本月支出
       var monthExp = expRows.filter(function(r){ return (r.date||'').substring(0,7)===monthStr; });
       // 分類加總做為支出管理列表
@@ -493,12 +539,18 @@ function KshipApp() {
       if(meals.length > 0) setMealExpenses(meals);
       if(packs.length > 0) setPackingExpenses(packs);
 
+      // finance_records 中的「其他營收」（非出貨）
+      var finRevMonth = allFin.filter(function(r){ return r.type==='revenue' && (r.date||'').substring(0,7)===monthStr; }).reduce(function(s,r){ return s+r.amount; },0);
+
       var monthExpTotal = monthExp.reduce(function(s,r){ return s+r.amount; },0);
       setFin({
         todayRev, monthRev, todayPay, outstanding: monthRev - monthPay,
         monthProfit: monthRev - monthExpTotal,
         recentTx: recentTx.slice(0,10), recentPay: recentPay.slice(0,10),
-        monthExpTotal
+        monthExpTotal,
+        shipRevenue: shipRevMonth, finRevenue: finRevMonth,
+        unpaidList: unpaidList, over30Amount: over30Total, unpaidCustCount: unpaidList.length,
+        monthlyTrend: monthlyTrend
       });
       console.log('💰 財務載入完成:', {todayRev,monthRev,todayPay,monthExpTotal});
     } catch(e) { console.error('loadFinancials error:', e); }
@@ -528,6 +580,34 @@ function KshipApp() {
   const [custSearch, setCustSearch] = useState("");
   const [custFilter, setCustFilter] = useState("全部");
   const [inboundDetail, setInboundDetail] = useState([]);
+  const [selectedCust, setSelectedCust] = useState(null);
+  const [custShipRecords, setCustShipRecords] = useState([]);
+  const [custUnpaidRecords, setCustUnpaidRecords] = useState([]);
+
+  async function selectCustomer(cust) {
+    setSelectedCust(cust);
+    setTab("cust-detail");
+    if(!sb || !cust) return;
+    try {
+      // 載入該客戶的出貨紀錄（從 tasks）
+      var {data:shipTasks} = await sb.from('tasks').select('*').eq('member_code', cust.code).order('created_at',{ascending:false});
+      shipTasks = (shipTasks||[]).filter(function(t){ return (t.task_type==='ship'||t.type==='ship'); });
+      var shipped = shipTasks.filter(function(t){ return t.status==='completed'||t.status==='paid'; });
+      setCustShipRecords(shipped.map(function(t){
+        var d = t.created_at ? new Date(t.created_at).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric'}) : '—';
+        var statusMap = {completed:'已出貨',paid:'已付款',packing:'包裝中',pending:'待處理'};
+        return {date:d, cost:t.ship_cost||0, status:statusMap[t.status]||t.status};
+      }));
+      var unpaid = shipTasks.filter(function(t){ return t.status==='completed' && t.ship_cost > 0; });
+      setCustUnpaidRecords(unpaid.map(function(t){
+        var d = t.created_at ? new Date(t.created_at).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric'}) : '—';
+        var now = new Date();
+        var created = t.created_at ? new Date(t.created_at) : now;
+        var days = Math.max(0, Math.floor((now - created)/(86400000)));
+        return {date:d, cost:t.ship_cost||0, days:days};
+      }));
+    } catch(e){ console.error('selectCustomer error:', e); }
+  }
   
   async function loadInboundDetail() {
     if(!sb) return;
@@ -604,38 +684,67 @@ function KshipApp() {
     } catch(e){ console.error('loadPerformance error:', e); }
   }
 
-  // ── 客戶管理（Supabase members + packages）──
+  // ── 客戶管理（Supabase members + packages + tasks）──
   async function loadCustomers() {
     if(!sb) return;
     try {
       var {data:allMembers} = await sb.from('members').select('*').order('id');
       allMembers = allMembers||[];
       // 每位客戶的包裹統計
-      var {data:allPkgs} = await sb.from('packages').select('member_code,weight_kg,scanned_at').eq('status','arrived');
+      var {data:allPkgs} = await sb.from('packages').select('member_code,weight_kg,scanned_at,created_at').order('created_at',{ascending:false});
       allPkgs = allPkgs||[];
       var pkgMap = {};
       allPkgs.forEach(function(p){
         var mc = p.member_code||'';
         if(!pkgMap[mc]) pkgMap[mc]={count:0,total:0,lastDate:''};
         pkgMap[mc].count++;
-        if(p.scanned_at && p.scanned_at > (pkgMap[mc].lastDate||'')) pkgMap[mc].lastDate = p.scanned_at;
+        var dt = p.scanned_at || p.created_at || '';
+        if(dt && dt > (pkgMap[mc].lastDate||'')) pkgMap[mc].lastDate = dt;
+      });
+
+      // 出貨消費統計（從 tasks）
+      var {data:allTasks} = await sb.from('tasks').select('*');
+      var shipTasks = (allTasks||[]).filter(function(t){ return (t.task_type==='ship'||t.type==='ship') && (t.status==='completed'||t.status==='paid'); });
+      var spendMap = {};
+      var now = new Date();
+      var monthStr = now.getFullYear()+'-'+(now.getMonth()+1<10?'0':'')+(now.getMonth()+1);
+      var lastMonth = new Date(now.getFullYear(), now.getMonth()-1, 1);
+      var lastMonthStr = lastMonth.getFullYear()+'-'+(lastMonth.getMonth()+1<10?'0':'')+(lastMonth.getMonth()+1);
+
+      shipTasks.forEach(function(t){
+        var mc = t.member_code||'';
+        if(!spendMap[mc]) spendMap[mc]={total:0,month:0,count:0,lastMonthAirKg:0,thisMonthAirKg:0};
+        spendMap[mc].total += (t.ship_cost||0);
+        spendMap[mc].count++;
+        if((t.created_at||'').substring(0,7)===monthStr) spendMap[mc].month += (t.ship_cost||0);
+        // 空運重量統計（用於等級判定）
+        var isAir = (t.details||'').indexOf('空運') >= 0;
+        if(isAir && t.ship_weight) {
+          if((t.created_at||'').substring(0,7)===lastMonthStr) spendMap[mc].lastMonthAirKg += t.ship_weight;
+          if((t.created_at||'').substring(0,7)===monthStr) spendMap[mc].thisMonthAirKg += t.ship_weight;
+        }
       });
 
       var list = allMembers.map(function(m){
         var stats = pkgMap[m.member_code]||{count:0,lastDate:''};
+        var spend = spendMap[m.member_code]||{total:0,month:0,count:0,lastMonthAirKg:0,thisMonthAirKg:0};
         var lastD = stats.lastDate ? new Date(stats.lastDate).toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'}) : '—';
+        // 等級判定：上月空運重量 ≥300kg=VVIP, ≥100kg=VIP, 否則一般
+        var grade = spend.lastMonthAirKg >= 300 ? 'VVIP' : (spend.lastMonthAirKg >= 100 ? 'VIP' : '一般');
         return {
           id:m.id, code:m.member_code, name:m.name||m.member_code,
-          phone:m.phone||'', email:m.email||'',
+          phone:m.phone||'', email:m.email||'', line_id:m.line_id||'', address:m.address||'', note:m.note||'',
           pkgCount:stats.count, lastDate:lastD,
-          grade: stats.count >= 50 ? 'VIP' : '一般'
+          totalSpend: spend.total, monthSpend: spend.month, shipCount: spend.count,
+          grade: grade, lastMonthAirKg: spend.lastMonthAirKg, thisMonthAirKg: spend.thisMonthAirKg,
+          created_at: m.created_at||''
         };
-      }).sort(function(a,b){return b.pkgCount-a.pkgCount;});
+      }).sort(function(a,b){return b.totalSpend-a.totalSpend;});
       setCustList(list);
       setCustStats({
         total: list.length,
         active: list.filter(function(c){return c.pkgCount>0;}).length,
-        vip: list.filter(function(c){return c.grade==='VIP';}).length
+        vip: list.filter(function(c){return c.grade==='VIP'||c.grade==='VVIP';}).length
       });
       console.log('👥 客戶載入:', list.length, '位');
     } catch(e){ console.error('loadCustomers error:', e); }
@@ -1237,19 +1346,19 @@ function KshipApp() {
             {tab === "fin-unpaid" && (
               <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"未收款總額",v:w(fin.outstanding),c:"#c0504d"},{l:"超過30天",v:w(Math.round(fin.outstanding*0.3)),c:"#c0504d"},{l:"客戶數",v:"—",c:"#34537d"}].map((s,i)=>(
+                  {[{l:"未收款總額",v:w(fin.unpaidList.reduce(function(s,c){return s+c.amount;},0)),c:"#c0504d"},{l:"超過30天",v:w(fin.over30Amount),c:"#c0504d"},{l:"未收款客戶",v:fin.unpaidCustCount+" 位",c:"#34537d"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:16,border:`1px solid ${i<2?"#f0d0ce":"#dce3ed"}`,textAlign:"center"}}>
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>待付款 / 未付款名單</h3>
-                  {[{n:"暫無未付款記錄",a:0,d:0,last:"—",c:"#8a9ab0"}].map((r,i)=>(
-                    <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #f0f2f5":"none",gap:10,flexWrap:"wrap",fontSize:13}}>
-                      <span style={{width:8,height:8,borderRadius:"50%",background:r.c,flexShrink:0}}/>
-                      <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.n}</span>
-                      <span style={{fontWeight:700,color:"#c0504d"}}>{w(r.a)}</span>
-                      <span style={{fontSize:11,color:r.c,fontWeight:600}}>{r.d}天</span>
-                      {r.last && <span style={{fontSize:11,color:"#8a9ab0"}}>催收 {r.last}</span>}
+                  {fin.unpaidList.length===0 ? <div style={{textAlign:"center",color:"#8a9ab0",padding:16}}>目前沒有未收款紀錄</div> :
+                  fin.unpaidList.slice(0,10).map((r,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<fin.unpaidList.length-1?"1px solid #f0f2f5":"none",gap:10,flexWrap:"wrap",fontSize:13}}>
+                      <span style={{width:8,height:8,borderRadius:"50%",background:r.days>30?"#c0504d":r.days>7?"#c4953a":"#5b9e6f",flexShrink:0}}/>
+                      <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.code}</span>
+                      <span style={{fontWeight:700,color:"#c0504d"}}>{w(r.amount)}</span>
+                      <span style={{fontSize:11,color:r.days>30?"#c0504d":"#c4953a",fontWeight:600}}>{r.count}筆 · {r.days||0}天</span>
                     </div>))}
                 </div>
               </div>
@@ -1406,23 +1515,28 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>收入結構</h3>
-                  {[{l:"出貨收入",v:fin.monthRev,pct:100,c:"#34537d"},{l:"代購收入",v:0,pct:0,c:"#7b6ba5"},{l:"其他收入",v:0,pct:0,c:"#8a9ab0"}].map((r,i)=>(
-                    <div key={i} style={{padding:"8px 0",borderBottom:i<2?"1px solid #f0f2f5":"none"}}>
+                  {(function(){
+                    var total=fin.monthRev||1;
+                    return [{l:"出貨收入",v:fin.shipRevenue,pct:Math.round(fin.shipRevenue/total*100),c:"#34537d"},{l:"其他收入",v:fin.finRevenue,pct:Math.round(fin.finRevenue/total*100),c:"#8a9ab0"}];
+                  })().map((r,i)=>(
+                    <div key={i} style={{padding:"8px 0",borderBottom:i<1?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}><span>{r.l}</span><span style={{fontWeight:600}}>{w(r.v)}</span></div>
                       <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{flex:1,background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.c,borderRadius:3,height:6,width:`${r.pct}%`}}/></div><span style={{fontSize:11,color:"#8a9ab0"}}>{r.pct}%</span></div>
                     </div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>每月利潤趨勢</h3>
-                  {[{m:"—",v:0,r:0}].map((r,i)=>(
-                    <div key={i} style={{padding:"8px 0",borderBottom:i<4?"1px solid #f0f2f5":"none"}}>
+                  {(fin.monthlyTrend||[]).length===0 ? <div style={{textAlign:"center",color:"#8a9ab0",padding:12}}>暫無資料</div> :
+                  (fin.monthlyTrend||[]).map((r,i)=>{
+                    var maxV=Math.max.apply(null,(fin.monthlyTrend||[]).map(function(x){return Math.abs(x.profit);})) || 1;
+                    return (
+                    <div key={i} style={{padding:"8px 0",borderBottom:i<(fin.monthlyTrend||[]).length-1?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}>
-                        <span style={{color:r.m===curMonth?"#34537d":"#4a5568",fontWeight:r.m===curMonth?700:400}}>{r.m}</span>
-                        <span><span style={{fontWeight:600}}>{w(r.v)}</span><span style={{fontSize:11,color:"#5b9e6f",marginLeft:8}}>利潤率 {r.r}%</span></span>
+                        <span style={{fontWeight:400}}>{r.m}</span>
+                        <span><span style={{fontWeight:600}}>{w(r.profit)}</span><span style={{fontSize:11,color:r.profit>=0?"#5b9e6f":"#c0504d",marginLeft:8}}>利潤率 {r.rate}%</span></span>
                       </div>
-                      <div style={{background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.m===curMonth?"#5b9e6f":"#34537d",borderRadius:3,height:6,width:`${(r.v/20000000*100).toFixed(0)}%`}}/></div>
-                    </div>))}
-                </div>
+                      <div style={{background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.profit>=0?"#5b9e6f":"#c0504d",borderRadius:3,height:6,width:`${Math.round(Math.abs(r.profit)/maxV*100)}%`}}/></div>
+                    </div>);})}
               </div>
             )}
 
@@ -1432,7 +1546,7 @@ function KshipApp() {
                 <div style={{background:"#fff",borderRadius:8,overflow:"hidden",border:"1px solid #dce3ed"}}>
                   <div style={{padding:"14px 18px",background:"#34537d",color:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <span style={{fontWeight:600,fontSize:15}}>📋 {curMonth} 月報表</span>
-                    <span style={{fontSize:12,opacity:.8}}>即時連動 Supabase</span>
+                    <span style={{fontSize:12,opacity:.8}}>自動計算</span>
                   </div>
                   <div style={{padding:18,fontSize:13}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:16}}>
@@ -1441,18 +1555,18 @@ function KshipApp() {
                     </div>
                     <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
                       <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>營收明細</div>
-                      {[{l:"出貨收入",v:fin.monthRev},{l:"代購收入",v:0},{l:"其他收入",v:0}].map((r,i)=>(
+                      {[{l:"出貨收入",v:fin.shipRevenue},{l:"其他收入",v:fin.finRevenue}].map((r,i)=>(
                         <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.l}</span><span style={{fontWeight:600}}>{w(r.v)}</span></div>))}
                     </div>
                     <div style={{borderBottom:"1px solid #f0f2f5",paddingBottom:12,marginBottom:12}}>
-                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>支出明細（from Supabase expenses）</div>
+                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>支出明細</div>
                       {expenses.length===0 ? <div style={{color:"#8a9ab0",padding:"4px 0"}}>本月尚無支出紀錄</div> :
                       expenses.map((r,i)=>(
                         <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.label}</span><span style={{fontWeight:600,color:"#c0504d"}}>{w(r.amount)}</span></div>))}
                       <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderTop:"1px solid #dce3ed",marginTop:6,fontWeight:700}}><span>支出合計</span><span style={{color:"#c0504d"}}>{w(fin.monthExpTotal||0)}</span></div>
                     </div>
                     <div>
-                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>薪資支出（from 薪資管理）</div>
+                      <div style={{fontWeight:600,marginBottom:8,color:"#34537d"}}>薪資支出</div>
                       {records.filter(r=>r.month===curMonth).length===0 ? <div style={{color:"#8a9ab0",padding:"4px 0"}}>本月尚未儲存薪資</div> :
                       records.filter(r=>r.month===curMonth).map((r,i)=>(
                         <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 0"}}><span style={{color:"#4a5568"}}>{r.empName}</span><span style={{fontWeight:600}}>{w(r.totalPayable)}</span></div>))}
@@ -1531,7 +1645,7 @@ function KshipApp() {
                   <button onClick={()=>setCustSearch("")} style={{...btnP,background:"#8a9ab0",color:"#fff",fontSize:12}}>清除</button>
                 </div>
                 <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-                  {["全部","VIP","一般"].map(f=>(
+                  {["全部","VVIP","VIP","一般"].map(f=>(
                     <button key={f} onClick={()=>setCustFilter(f)} style={{padding:"6px 16px",borderRadius:20,border:custFilter===f?"2px solid #34537d":"1px solid #dce3ed",background:custFilter===f?"#34537d":"#fff",color:custFilter===f?"#fff":"#4a5568",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{f}</button>
                   ))}
                 </div>
@@ -1541,9 +1655,9 @@ function KshipApp() {
                     <tbody>
                       {filteredCust.length===0 ? <tr><td colSpan={6} style={{padding:20,textAlign:"center",color:"#8a9ab0"}}>無符合的客戶</td></tr> :
                       filteredCust.slice(0,30).map((r,i)=>(
-                        <tr key={i} style={{borderBottom:"1px solid #f0f2f5",cursor:"pointer"}} onClick={()=>switchTab("cust-detail")}>
+                        <tr key={i} style={{borderBottom:"1px solid #f0f2f5",cursor:"pointer"}} onClick={()=>selectCustomer(r)}>
                           <td style={{padding:8,color:"#8a9ab0"}}>{r.code}</td><td style={{padding:8,fontWeight:600}}>{r.name}</td><td style={{padding:8,fontSize:12,color:"#8a9ab0"}}>{r.phone}</td>
-                          <td style={{padding:8}}><span style={{fontSize:11,fontWeight:600,color:r.grade==="VIP"?"#c4953a":"#34537d",background:(r.grade==="VIP"?"#c4953a":"#34537d")+"15",padding:"2px 8px",borderRadius:4}}>{r.grade}</span></td>
+                          <td style={{padding:8}}><span style={{fontSize:11,fontWeight:600,color:r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"),background:(r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"))+"15",padding:"2px 8px",borderRadius:4}}>{r.grade==="VVIP"?"👑 ":""}{r.grade==="VIP"?"⭐ ":""}{r.grade}</span></td>
                           <td style={{padding:8,fontWeight:600}}>{r.pkgCount} 件</td><td style={{padding:8,color:"#8a9ab0"}}>{r.lastDate}</td></tr>))}
                     </tbody>
                   </table>
@@ -1553,33 +1667,37 @@ function KshipApp() {
             )}
 
             {/* ═══ 客戶資料 ═══ */}
-            {tab === "cust-detail" && (
+            {tab === "cust-detail" && selectedCust && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8,marginBottom:14}}>
-                    <div><div style={{fontSize:18,fontWeight:700}}>{custList[0]?custList[0].name:"—"}</div><div style={{fontSize:12,color:"#8a9ab0"}}>{custList[0]?custList[0].code:"—"}</div></div>
-                    <span style={{fontSize:12,fontWeight:600,color:"#c4953a",background:"#c4953a15",padding:"4px 12px",borderRadius:6}}>VIP ⭐</span>
+                    <div><div style={{fontSize:18,fontWeight:700}}>{selectedCust.name}</div><div style={{fontSize:12,color:"#8a9ab0"}}>{selectedCust.code}</div></div>
+                    {(selectedCust.grade==='VIP'||selectedCust.grade==='VVIP') && <span style={{fontSize:12,fontWeight:600,color:selectedCust.grade==='VVIP'?"#b8860b":"#c4953a",background:(selectedCust.grade==='VVIP'?"#b8860b":"#c4953a")+"15",padding:"4px 12px",borderRadius:6}}>{selectedCust.grade==='VVIP'?'👑 VVIP':'⭐ VIP'}</span>}
+                    {selectedCust.grade!=='VIP' && selectedCust.grade!=='VVIP' && <span style={{fontSize:12,fontWeight:600,color:"#34537d",background:"#e8edf4",padding:"4px 12px",borderRadius:6}}>{selectedCust.grade}</span>}
                   </div>
                   <div style={{fontSize:13,lineHeight:2}}>
-                    {[{l:"電話",v:"010-1234-5678"},{l:"LINE ID",v:"kim_123"},{l:"地址",v:"首爾市 江南區 ..."},{l:"備註",v:"每週固定出貨，需優先處理"}].map((r,i)=>(
+                    {[{l:"電話",v:selectedCust.phone||'—'},{l:"LINE ID",v:selectedCust.line_id||'—'},{l:"地址",v:selectedCust.address||'—'},{l:"備註",v:selectedCust.note||'—'}].map((r,i)=>(
                       <div key={i} style={{display:"flex",gap:12}}><span style={{color:"#8a9ab0",minWidth:55}}>{r.l}</span><span>{r.v}</span></div>))}
                   </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4, 1fr)",gap:10}}>
-                  {[{l:"累計消費",v:w(0),c:"#34537d"},{l:"本月消費",v:w(0),c:"#34537d"},{l:"平均月消費",v:w(0),c:"#5b9e6f"},{l:"出貨次數",v:"—",c:"#7b6ba5"}].map((s,i)=>(
+                  {[{l:"累計消費",v:w(selectedCust.totalSpend||0),c:"#34537d"},{l:"本月消費",v:w(selectedCust.monthSpend||0),c:"#34537d"},{l:"平均月消費",v:w(selectedCust.shipCount>0?Math.round(selectedCust.totalSpend/Math.max(1,selectedCust.shipCount)):0),c:"#5b9e6f"},{l:"出貨次數",v:(selectedCust.shipCount||0)+" 次",c:"#7b6ba5"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>最近出貨紀錄</h3>
-                  {[{d:"5/30",c:3,a:85000,s:"已出貨"},{d:"5/25",c:2,a:62000,s:"已出貨"},{d:"5/18",c:5,a:145000,s:"已出貨"}].map((r,i)=>(
-                    <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<2?"1px solid #f0f2f5":"none",fontSize:13}}>
-                      <span style={{color:"#8a9ab0"}}>{r.d}</span><span>{r.c}件</span><span style={{fontWeight:600}}>{w(r.a)}</span>
-                      <span style={{fontSize:11,color:"#5b9e6f",fontWeight:600}}>{r.s}</span></div>))}
+                  {custShipRecords.length===0 ? <div style={{textAlign:"center",color:"#8a9ab0",padding:12}}>暫無出貨紀錄</div> :
+                  custShipRecords.slice(0,10).map((r,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:i<custShipRecords.length-1?"1px solid #f0f2f5":"none",fontSize:13}}>
+                      <span style={{color:"#8a9ab0"}}>{r.date}</span><span style={{fontWeight:600}}>{w(r.cost)}</span>
+                      <span style={{fontSize:11,color:"#5b9e6f",fontWeight:600}}>{r.status}</span></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #fde8e8"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#c0504d"}}>未付款紀錄</h3>
-                  <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",fontSize:13}}>
-                    <span style={{color:"#8a9ab0"}}>5/30</span><span style={{fontWeight:600,color:"#c0504d"}}>{w(0)}</span><span style={{fontSize:11,color:"#c4953a"}}>待收款（3天）</span></div>
+                  {custUnpaidRecords.length===0 ? <div style={{textAlign:"center",color:"#8a9ab0",padding:12}}>暫無未付款紀錄</div> :
+                  custUnpaidRecords.map((r,i)=>(
+                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:i<custUnpaidRecords.length-1?"1px solid #f0f2f5":"none",fontSize:13}}>
+                      <span style={{color:"#8a9ab0"}}>{r.date}</span><span style={{fontWeight:600,color:"#c0504d"}}>{w(r.cost)}</span><span style={{fontSize:11,color:"#c4953a"}}>待收款（{r.days}天）</span></div>))}
                 </div>
               </div>
             )}
@@ -1588,19 +1706,19 @@ function KshipApp() {
             {tab === "cust-vip" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-                  <div><div style={{fontSize:11,color:"#8a9ab0"}}>VIP 客戶數</div><div style={{fontSize:24,fontWeight:700,color:"#c4953a"}}>42 位</div></div>
-                  <div style={{background:"#f5f8fc",padding:"8px 14px",borderRadius:6,fontSize:12,color:"#8a9ab0"}}>VIP 標準：累計消費 ≥ ₩5,000,000</div>
+                  <div><div style={{fontSize:11,color:"#8a9ab0"}}>VIP 客戶數</div><div style={{fontSize:24,fontWeight:700,color:"#c4953a"}}>{custStats.vip} 位</div></div>
+                  <div style={{background:"#f5f8fc",padding:"8px 14px",borderRadius:6,fontSize:12,color:"#8a9ab0",lineHeight:1.8}}>VIP：上月空運 ≥ 100kg（折抵 ₩5/kg）<br/>VVIP：上月空運 ≥ 300kg（折抵 ₩10/kg）</div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr",gap:10}}>
-                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP 本月總消費</div><div style={{fontSize:18,fontWeight:700,color:"#34537d"}}>{w(allExpTotal)}</div></div>
-                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP 佔總營收</div><div style={{fontSize:18,fontWeight:700,color:"#5b9e6f"}}>57%</div></div>
+                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP/VVIP 本月消費</div><div style={{fontSize:18,fontWeight:700,color:"#34537d"}}>{w(custList.filter(function(c){return c.grade==='VIP'||c.grade==='VVIP';}).reduce(function(s,c){return s+c.monthSpend;},0))}</div></div>
+                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP/VVIP 佔營收</div><div style={{fontSize:18,fontWeight:700,color:"#5b9e6f"}}>{custList.reduce(function(s,c){return s+c.totalSpend;},0)>0?Math.round(custList.filter(function(c){return c.grade==='VIP'||c.grade==='VVIP';}).reduce(function(s,c){return s+c.totalSpend;},0)/custList.reduce(function(s,c){return s+c.totalSpend;},0)*100):0}%</div></div>
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   {custList.slice(0,5).map((r,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<4?"1px solid #f0f2f5":"none",fontSize:13}}>
                       <span style={{minWidth:22,fontWeight:700,color:i===0?"#c4953a":i===1?"#8a9ab0":i===2?"#b85c5c":"#34537d"}}>{i+1}</span>
                       <span style={{flex:1,fontWeight:500}}>{r.name}</span>
-                      <span style={{fontSize:11,color:r.grade==="VIP"?"#c4953a":"#34537d",background:(r.grade==="VIP"?"#c4953a":"#34537d")+"15",padding:"2px 8px",borderRadius:4,fontWeight:600}}>{r.grade}</span>
+                      <span style={{fontSize:11,color:r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"),background:(r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"))+"15",padding:"2px 8px",borderRadius:4,fontWeight:600}}>{r.grade==="VVIP"?"👑 ":""}{r.grade==="VIP"?"⭐ ":""}{r.grade}</span>
                       <span style={{fontWeight:700,color:"#34537d"}}>{r.pkgCount} 件</span>
                       <span style={{fontSize:11,color:r.pkgCount>0?"#5b9e6f":"#c4953a"}}>{r.pkgCount>0?"活躍":"沉睡"}</span>
                     </div>))}
@@ -1612,7 +1730,7 @@ function KshipApp() {
             {tab === "cust-active" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"活躍客戶",v:"—",c:"#5b9e6f"},{l:"本月消費",v:w(fin.monthRev),c:"#34537d"},{l:"平均消費",v:"—",c:"#7b6ba5"}].map((s,i)=>(
+                  {[{l:"活躍客戶",v:custStats.active+" 位",c:"#5b9e6f"},{l:"本月消費",v:w(custList.reduce(function(s,c){return s+c.monthSpend;},0)),c:"#34537d"},{l:"平均消費",v:w(custStats.active>0?Math.round(custList.reduce(function(s,c){return s+c.monthSpend;},0)/custStats.active):0),c:"#7b6ba5"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
@@ -1652,18 +1770,19 @@ function KshipApp() {
             {tab === "cust-unpaid" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                  {[{l:"未付款總額",v:w(fin.outstanding),c:"#c0504d"},{l:"未付款客戶",v:"—",c:"#34537d"},{l:"超過30天",v:"—",c:"#c0504d"}].map((s,i)=>(
+                  {[{l:"未付款總額",v:w(fin.unpaidList.reduce(function(s,c){return s+c.amount;},0)),c:"#c0504d"},{l:"未付款客戶",v:fin.unpaidCustCount+" 位",c:"#34537d"},{l:"超過30天",v:w(fin.over30Amount),c:"#c0504d"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:16,border:`1px solid ${s.c==="#c0504d"?"#f0d0ce":"#dce3ed"}`,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:6}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  {[{n:"暫無未付款記錄",a:0,cnt:0,oldest:"—",days:0,c:"#8a9ab0"}].map((r,i)=>(
-                    <div key={i} style={{padding:"12px 0",borderBottom:i<4?"1px solid #f0f2f5":"none"}}>
+                  {fin.unpaidList.length===0 ? <div style={{textAlign:"center",color:"#8a9ab0",padding:16}}>目前沒有未收款紀錄</div> :
+                  fin.unpaidList.slice(0,10).map((r,i)=>(
+                    <div key={i} style={{padding:"12px 0",borderBottom:i<fin.unpaidList.length-1?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",alignItems:"center",gap:10,fontSize:13,flexWrap:"wrap"}}>
-                        <span style={{width:8,height:8,borderRadius:"50%",background:r.c,flexShrink:0}}/>
-                        <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.n}</span>
-                        <span style={{fontWeight:700,color:"#c0504d"}}>{w(r.a)}</span>
-                        <span style={{fontSize:11,color:"#8a9ab0"}}>{r.cnt}筆</span>
-                        <span style={{fontSize:11,fontWeight:600,color:r.c}}>最早 {r.oldest}（{r.days}天）</span></div>
+                        <span style={{width:8,height:8,borderRadius:"50%",background:r.days>30?"#c0504d":r.days>7?"#c4953a":"#5b9e6f",flexShrink:0}}/>
+                        <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.code}</span>
+                        <span style={{fontWeight:700,color:"#c0504d"}}>{w(r.amount)}</span>
+                        <span style={{fontSize:11,color:"#8a9ab0"}}>{r.count}筆</span>
+                        <span style={{fontSize:11,fontWeight:600,color:r.days>30?"#c0504d":"#c4953a"}}>最早 {r.oldest}（{r.days||0}天）</span></div>
                     </div>))}
                 </div>
               </div>
@@ -1685,8 +1804,8 @@ function KshipApp() {
                       <span style={{fontSize:12,color:"#8a9ab0"}}>{r.cnt}次</span></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",fontSize:13}}>
-                  <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}><span style={{color:"#4a5568"}}>前10名佔總營收</span><span style={{fontWeight:700,color:"#34537d"}}>68%</span></div>
-                  <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}><span style={{color:"#4a5568"}}>前20名佔總營收</span><span style={{fontWeight:700,color:"#34537d"}}>85%</span></div>
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}><span style={{color:"#4a5568"}}>排行依據</span><span style={{fontWeight:700,color:"#34537d"}}>累計消費金額</span></div>
+                  <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0"}}><span style={{color:"#4a5568"}}>總客戶數</span><span style={{fontWeight:700,color:"#34537d"}}>{custStats.total} 位</span></div>
                 </div>
               </div>
             )}
@@ -1695,20 +1814,33 @@ function KshipApp() {
             {tab === "cust-analysis" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4, 1fr)",gap:10}}>
-                  {[{l:"總客戶數",v:"—",c:"#34537d"},{l:"本月活躍",v:"185 位（29%）",c:"#5b9e6f"},{l:"新增客戶",v:"—",c:"#7b6ba5"},{l:"流失客戶",v:"—",c:"#c0504d"}].map((s,i)=>(
+                  {(function(){
+                    var now=new Date(),ms=now.getFullYear()+'-'+(now.getMonth()+1<10?'0':'')+(now.getMonth()+1);
+                    var newThisMonth=custList.filter(function(c){return (c.created_at||'').substring(0,7)===ms;}).length;
+                    var activePct=custStats.total>0?Math.round(custStats.active/custStats.total*100):0;
+                    var inactive=custList.filter(function(c){return c.pkgCount===0;}).length;
+                    return [{l:"總客戶數",v:custStats.total+" 位",c:"#34537d"},{l:"本月活躍",v:custStats.active+" 位（"+activePct+"%）",c:"#5b9e6f"},{l:"本月新增",v:newThisMonth+" 位",c:"#7b6ba5"},{l:"沉睡客戶",v:inactive+" 位",c:"#c0504d"}];
+                  })().map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>客戶等級分佈</h3>
-                  {[{l:"VIP",v:custStats.vip,pct:custStats.total?Math.round(custStats.vip/custStats.total*100):0,c:"#c4953a"},{l:"一般",v:custStats.total-custStats.vip,pct:custStats.total?Math.round((custStats.total-custStats.vip)/custStats.total*100):0,c:"#34537d"},{l:"黑名單",v:0,pct:0,c:"#c0504d"}].map((r,i)=>(
-                    <div key={i} style={{padding:"8px 0",borderBottom:i<2?"1px solid #f0f2f5":"none"}}>
+                  {[{l:"VIP",v:custStats.vip,pct:custStats.total?Math.round(custStats.vip/custStats.total*100):0,c:"#c4953a"},{l:"一般",v:custStats.total-custStats.vip,pct:custStats.total?Math.round((custStats.total-custStats.vip)/custStats.total*100):0,c:"#34537d"}].map((r,i)=>(
+                    <div key={i} style={{padding:"8px 0",borderBottom:i<1?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}><span>{r.l}</span><span style={{fontWeight:600}}>{r.v} 位</span></div>
                       <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{flex:1,background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.c,borderRadius:3,height:6,width:`${r.pct}%`}}/></div><span style={{fontSize:11,color:"#8a9ab0"}}>{r.pct}%</span></div>
                     </div>))}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>消費區間分佈</h3>
-                  {[{l:"₩0 - 100萬",v:420,pct:66},{l:"₩100萬 - 500萬",v:150,pct:24},{l:"₩500萬 - 1000萬",v:45,pct:7},{l:"₩1000萬以上",v:20,pct:3}].map((r,i)=>(
+                  {(function(){
+                    var ranges=[{l:"₩0",min:0,max:0},{l:"₩1 - 100萬",min:1,max:1000000},{l:"₩100萬 - 500萬",min:1000000,max:5000000},{l:"₩500萬以上",min:5000000,max:Infinity}];
+                    var total=custList.length||1;
+                    return ranges.map(function(rng){
+                      var cnt=custList.filter(function(c){return rng.max===0?(c.totalSpend===0):(c.totalSpend>=rng.min&&c.totalSpend<rng.max);}).length;
+                      return {l:rng.l,v:cnt,pct:Math.round(cnt/total*100)};
+                    });
+                  })().map((r,i)=>(
                     <div key={i} style={{padding:"8px 0",borderBottom:i<3?"1px solid #f0f2f5":"none"}}>
                       <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}><span>{r.l}</span><span style={{fontWeight:600}}>{r.v} 位</span></div>
                       <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{flex:1,background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:"#34537d",borderRadius:3,height:6,width:`${r.pct}%`}}/></div><span style={{fontSize:11,color:"#8a9ab0"}}>{r.pct}%</span></div>
@@ -1716,10 +1848,20 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>每月新增客戶趨勢</h3>
-                  {[{m:"2026/01",v:12},{m:"2026/02",v:15},{m:"2026/03",v:22},{m:"2026/04",v:16},{m:"2026/05",v:18}].map((r,i)=>(
+                  {(function(){
+                    var now=new Date();var months=[];
+                    for(var mi=4;mi>=0;mi--){var d=new Date(now.getFullYear(),now.getMonth()-mi,1);months.push(d.getFullYear()+'/'+(d.getMonth()+1<10?'0':'')+(d.getMonth()+1));}
+                    var result=months.map(function(ms){
+                      var dbMonth=ms.replace('/','-');
+                      var cnt=custList.filter(function(c){return (c.created_at||'').substring(0,7)===dbMonth;}).length;
+                      return {m:ms,v:cnt};
+                    });
+                    var maxV=Math.max.apply(null,result.map(function(r){return r.v;}))||1;
+                    return result.map(function(r){return{m:r.m,v:r.v,pct:Math.round(r.v/maxV*100)};});
+                  })().map((r,i)=>(
                     <div key={i} style={{padding:"6px 0",borderBottom:i<4?"1px solid #f0f2f5":"none"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,fontSize:13}}><span style={{color:r.m===curMonth?"#34537d":"#4a5568",fontWeight:r.m===curMonth?700:400}}>{r.m}</span><span style={{fontWeight:600}}>{r.v} 位</span></div>
-                      <div style={{background:"#eef2f7",borderRadius:3,height:5}}><div style={{background:"#34537d",borderRadius:3,height:5,width:`${(r.v/22*100).toFixed(0)}%`}}/></div>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,fontSize:13}}><span style={{fontWeight:400}}>{r.m}</span><span style={{fontWeight:600}}>{r.v} 位</span></div>
+                      <div style={{background:"#eef2f7",borderRadius:3,height:5}}><div style={{background:"#34537d",borderRadius:3,height:5,width:`${r.pct}%`}}/></div>
                     </div>))}
                 </div>
               </div>
@@ -1872,7 +2014,7 @@ function KshipApp() {
             {tab === "hr-performance" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>本月績效排行（Supabase 即時）</h3>
+                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>本月績效排行</h3>
                   {empPerf.length===0 ? <div style={{textAlign:"center",color:"#8a9ab0",padding:20}}>暫無入庫紀錄</div> :
                   empPerf.map((r,i)=>(
                     <div key={i} style={{padding:"12px 0",borderBottom:i<empPerf.length-1?"1px solid #f0f2f5":"none"}}>
