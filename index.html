@@ -26,6 +26,14 @@
 <body>
 <div id="root"><div class="loading-screen">正在載入員工管理系統...</div></div>
 
+<script>
+window.onerror = function(msg, url, line, col, error) {
+  var el = document.getElementById('root');
+  if(el) el.innerHTML = '<div style="padding:20px;color:red;font-size:13px;word-break:break-all"><b>載入錯誤：</b><br>'+msg+'<br>Line: '+line+', Col: '+col+'</div>';
+  return false;
+};
+</script>
+
 <script type="text/babel" data-presets="react">
 const { useState, useEffect } = React;
 
@@ -110,7 +118,7 @@ const INIT = (function() {
   return list;
 })();
 
-const w = n => "₩ " + n.toLocaleString();
+const w = n => "₩ " + (Number(n) || 0).toLocaleString();
 const now = new Date();
 const curMonth = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}`;
 const dotColors = ["#5b8fb9","#b85c5c","#6b9e7a","#c4953a","#7b6ba5","#4e8e8e","#c47a5a","#5c7eba"];
@@ -1537,6 +1545,7 @@ function KshipApp() {
                       </div>
                       <div style={{background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.profit>=0?"#5b9e6f":"#c0504d",borderRadius:3,height:6,width:`${Math.round(Math.abs(r.profit)/maxV*100)}%`}}/></div>
                     </div>);})}
+                </div>
               </div>
             )}
 
@@ -2575,7 +2584,6 @@ function KshipApp() {
 
           </div>
         </div>
-      </div>
       )}
     </div>
   );
