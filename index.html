@@ -21,17 +21,10 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
-<script>
-window.onerror = function(msg, url, line, col, err) {
-  document.body.innerHTML = '<div style="color:red;padding:20px;font-size:14px;word-break:break-all">'
-    + '<h2>Error</h2><p>' + msg + '</p><p>Line: ' + line + '</p></div>';
-  return false;
-};
-</script>
 <div id="root"><div class="loading-screen">正在載入員工管理系統...</div></div>
 
 <script>
