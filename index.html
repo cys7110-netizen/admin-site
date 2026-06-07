@@ -270,9 +270,8 @@ function KshipApp() {
         // 撈全部包裹 + 任務（select('*') 避免欄位不存在）
         var { data:allPkg } = await sb.from('packages').select('*');
         var inbound = (allPkg||[]).filter(function(p){
-          return (p.created_at && p.created_at >= start && p.created_at < end)
-              || (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
-              || (p.updated_at && p.updated_at >= start && p.updated_at < end);
+          return (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
+              || (!p.scanned_at && p.created_at && p.created_at >= start && p.created_at < end);
         }).length;
         var unclaimed = (allPkg||[]).filter(function(p){ return p.status === 'unclaimed'; }).length;
         var { data:allTasks } = await sb.from('tasks').select('*');
@@ -752,15 +751,11 @@ function KshipApp() {
       var now=new Date(),kstMs=now.getTime()+(9*60+now.getTimezoneOffset())*60000,kst=new Date(kstMs);
       var start=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth(),kst.getUTCDate())-9*3600000).toISOString();
       var end=new Date(new Date(start).getTime()+86400000).toISOString();
-      var {data}=await sb.from('packages').select('*').gte('created_at',start).lt('created_at',end).order('created_at',{ascending:false});
-      // 補充：也抓 scanned_at 在今天的
-      try {
-        var {data:d2}=await sb.from('packages').select('*').gte('scanned_at',start).lt('scanned_at',end);
-        if(d2 && d2.length > 0) {
-          var ids = new Set((data||[]).map(function(p){return p.id}));
-          d2.forEach(function(p){ if(!ids.has(p.id)){ data = data||[]; data.push(p); }});
-        }
-      } catch(e){}
+      var {data:allPkg}=await sb.from('packages').select('*');
+      var data = (allPkg||[]).filter(function(p){
+        return (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
+            || (!p.scanned_at && p.created_at && p.created_at >= start && p.created_at < end);
+      }).sort(function(a,b){ return (b.scanned_at||b.created_at||'').localeCompare(a.scanned_at||a.created_at||''); });
       setInboundDetail(data||[]);
     } catch(e){ console.error('loadInboundDetail:',e); }
   }
@@ -780,14 +775,12 @@ function KshipApp() {
         return {start:s.toISOString(),end:new Date(s.getTime()+86400000).toISOString()};
       })();
 
-      // 今日入庫 by 員工（兩個查詢合併）
-      var {data:todayPkgs} = await sb.from('packages').select('processed_by_name,created_at')
-        .gte('created_at',range.start).lt('created_at',range.end);
-      try {
-        var {data:todayPkgs2} = await sb.from('packages').select('processed_by_name,scanned_at')
-          .gte('scanned_at',range.start).lt('scanned_at',range.end);
-        if(todayPkgs2 && todayPkgs2.length > (todayPkgs||[]).length) todayPkgs = todayPkgs2;
-      } catch(e){}
+      // 今日入庫 by 員工（優先 scanned_at，沒有才 fallback created_at）
+      var {data:allPkgPerf} = await sb.from('packages').select('processed_by_name,created_at,scanned_at');
+      var todayPkgs = (allPkgPerf||[]).filter(function(p){
+        return (p.scanned_at && p.scanned_at >= range.start && p.scanned_at < range.end)
+            || (!p.scanned_at && p.created_at && p.created_at >= range.start && p.created_at < range.end);
+      });
       todayPkgs = todayPkgs||[];
       var perfMap = {};
       todayPkgs.forEach(function(p){
