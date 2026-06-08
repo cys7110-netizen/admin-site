@@ -1697,13 +1697,17 @@ function KshipApp() {
                     </div>
                   ) : (
                     records.filter(r=>r.month===salMonth).map((r,i)=>(
-                      <div key={r.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:"1px solid #f0f2f5",gap:10,flexWrap:"wrap",fontSize:13}}>
-                        <span style={{minWidth:45,color:"#8a9ab0"}}>{r.empNo||"—"}</span>
-                        <span style={{flex:1,fontWeight:600}}>{r.empName}</span>
-                        <span style={{fontSize:11,background:"#e8edf4",padding:"2px 8px",borderRadius:4}}>{r.empType}</span>
-                        <span style={{fontWeight:700,minWidth:100,textAlign:"right"}}>{w(r.totalPayable)}</span>
-                        <span style={{fontSize:11,fontWeight:600,color:"#5b9e6f",background:"#e8f5e920",padding:"2px 8px",borderRadius:4}}>已發放 ✓</span>
-                        <button onClick={()=>{if(!confirm('確定刪除 '+r.empName+' 的薪資記錄？'))return;var nr=records.filter(x=>x.id!==r.id);setRecords(nr);try{localStorage.setItem('hj_salary_records',JSON.stringify(nr));}catch(e){}saveSalaryToCloud(nr);}} style={{background:"none",border:"none",color:"#c0504d",fontSize:13,cursor:"pointer",padding:"2px 6px",fontFamily:"inherit"}}>刪除</button>
+                      <div key={r.id} style={{padding:"10px 0",borderBottom:"1px solid #f0f2f5",fontSize:13}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}>
+                            <span style={{color:"#8a9ab0",flexShrink:0}}>{r.empNo||"—"}</span>
+                            <span style={{fontWeight:600,whiteSpace:"nowrap",flexShrink:0}}>{r.empName}</span>
+                            <span style={{fontSize:11,background:"#e8edf4",padding:"2px 8px",borderRadius:4,whiteSpace:"nowrap",flexShrink:0}}>{r.empType}</span>
+                          </div>
+                          <span style={{fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>{w(r.totalPayable)}</span>
+                          <span style={{fontSize:11,fontWeight:600,color:"#5b9e6f",whiteSpace:"nowrap",flexShrink:0}}>已發放 ✓</span>
+                        </div>
+                        <div style={{marginTop:4}}><button onClick={()=>{if(!confirm('確定刪除 '+r.empName+' 的薪資記錄？'))return;var nr=records.filter(x=>x.id!==r.id);setRecords(nr);try{localStorage.setItem('hj_salary_records',JSON.stringify(nr));}catch(e){}saveSalaryToCloud(nr);}} style={{background:"none",border:"none",color:"#c0504d",fontSize:13,cursor:"pointer",padding:"2px 6px",fontFamily:"inherit"}}>刪除</button></div>
                       </div>))
                   )}
                   <div style={{borderTop:"2px solid #34537d",marginTop:8,paddingTop:10,fontSize:13}}>
