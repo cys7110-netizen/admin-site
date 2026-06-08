@@ -149,6 +149,7 @@ const SHIFTS = [
   { k:"C", l:"17-23", t:"17:00~23:00", h:6, c:"#c4953a", bg:"#f5ead4" },
   { k:"D", l:"18-00", t:"18:00~00:00", h:6, c:"#7b6ba5", bg:"#eae4f4" },
   { k:"E", l:"20-02", t:"20:00~02:00", h:6, c:"#c0504d", bg:"#f4dede" },
+  { k:"F", l:"全天", t:"17:00~03:00", h:10, c:"#d4761c", bg:"#fde8cc" },
   { k:"休", l:"休假", t:"休假", h:0, c:"#8a9ab0", bg:"#eef0f2" },
 ];
 const SHIFT_KEYS = SHIFTS.map(s=>s.k);
@@ -158,6 +159,14 @@ function fmtDate(d){ return d.slice(0,4)+'/'+d.slice(5,7)+'/'+d.slice(8,10); }
 function weekLabel(mon){ var d=new Date(mon); var sun=new Date(d); sun.setDate(d.getDate()+6); return (d.getMonth()+1)+'/'+d.getDate()+' ~ '+(sun.getMonth()+1)+'/'+sun.getDate(); }
 function dayLabels(mon){ var arr=[]; for(var i=0;i<7;i++){ var d=new Date(mon); d.setDate(d.getDate()+i); var wd=["日","一","二","三","四","五","六"][d.getDay()]; arr.push({d:d.toISOString().slice(0,10),wd:wd,dd:(d.getMonth()+1)+'/'+ d.getDate()}); } return arr; }
 const ATT_STATUS = [{k:"出勤",c:"#5b9e6f"},{k:"請假",c:"#c4953a"},{k:"遲到",c:"#c0504d"},{k:"未到",c:"#8a9ab0"}];
+function calcWorkHours(clockIn, clockOut) {
+  if(!clockIn||!clockOut) return 0;
+  var p1=clockIn.split(':'),p2=clockOut.split(':');
+  var inM=parseInt(p1[0])*60+parseInt(p1[1]||0);
+  var outM=parseInt(p2[0])*60+parseInt(p2[1]||0);
+  if(outM<=inM) outM+=1440;
+  return Math.round((outM-inM)/60*10)/10;
+}
 
 function useIsMobile() {
   const [m, setM] = useState(window.innerWidth < 700);
@@ -368,6 +377,21 @@ function KshipApp() {
   const getAtt = (date,empNo)=>((attData[date]||{})[empNo])||null;
   const setAttRecord = (date,empNo,rec)=>{ var nd={...attData}; if(!nd[date])nd[date]={}; nd[date]={...nd[date],[empNo]:rec}; saveAtt(nd); };
   const delAttRecord = (date,empNo)=>{ var nd={...attData}; if(nd[date]){var dd={...nd[date]}; delete dd[empNo]; nd[date]=dd;} saveAtt(nd); };
+  const getMonthAtt = (empNo, ym)=>{
+    var dIM=new Date(+ym.slice(0,4),+ym.slice(5,7),0).getDate();
+    var tH=0,oH=0,days=0;
+    for(var d=1;d<=dIM;d++){
+      var dk=ym+'-'+String(d).padStart(2,'0');
+      var a=(attData[dk]||{})[empNo];
+      if(a&&(a.status==='出勤'||a.status==='遲到')){
+        var wk=calcWorkHours(a.clockIn,a.clockOut);
+        var s=getShift(a.shift);
+        var sch=s?s.h:0;
+        if(wk>0){days++;if(sch>0&&wk>sch){tH+=sch;oH+=Math.round((wk-sch)*10)/10;}else{tH+=wk;}}
+      }
+    }
+    return{totalHours:Math.round(tH*10)/10, otHours:Math.round(oH*10)/10, days:days};
+  };
 
   // ── 排班管理 State（localStorage + Supabase 雲端）──
   const [schWeek, setSchWeek] = useState(getMonday(new Date().toISOString().slice(0,10)));
@@ -2233,6 +2257,7 @@ function KshipApp() {
                             <input type="time" value={a.clockIn||""} onChange={ev=>{setAttRecord(attDate,e.empNo,{...a,clockIn:ev.target.value});}} style={{border:"1px solid #dce3ed",borderRadius:4,padding:"3px 6px",fontSize:12,fontFamily:"inherit",width:90}} />
                             <span style={{color:"#8a9ab0"}}>~</span>
                             <input type="time" value={a.clockOut||""} onChange={ev=>{setAttRecord(attDate,e.empNo,{...a,clockOut:ev.target.value});}} style={{border:"1px solid #dce3ed",borderRadius:4,padding:"3px 6px",fontSize:12,fontFamily:"inherit",width:90}} />
+                            {(()=>{var wh=calcWorkHours(a.clockIn,a.clockOut);var sh=ps?ps.h:0;var ot=sh>0&&wh>sh?Math.round((wh-sh)*10)/10:0;return wh>0?(<span style={{fontSize:11,color:"#34537d",fontWeight:600,whiteSpace:"nowrap"}}>{wh}h{ot>0&&<span style={{color:"#c0504d",marginLeft:4}}>+{ot}h加班</span>}</span>):null;})()}
                             </>
                           )}
                           {a&&a.status==="請假"&&(
@@ -2249,17 +2274,29 @@ function KshipApp() {
                     var ym=attDate.slice(0,7);
                     var daysInMonth=new Date(+ym.slice(0,4),+ym.slice(5,7),0).getDate();
                     return active.map((e,i)=>{
-                      var on=0,late=0,leave=0;
+                      var on=0,late=0,leave=0,tH=0,oH=0;
                       for(var d=1;d<=daysInMonth;d++){
                         var dk=ym+'-'+String(d).padStart(2,'0');
                         var a=(attData[dk]||{})[e.empNo];
-                        if(a){if(a.status==="出勤")on++;else if(a.status==="遲到"){on++;late++;}else if(a.status==="請假")leave++;}
+                        if(a){
+                          if(a.status==="出勤")on++;
+                          else if(a.status==="遲到"){on++;late++;}
+                          else if(a.status==="請假")leave++;
+                          if(a.status==="出勤"||a.status==="遲到"){
+                            var wh=calcWorkHours(a.clockIn,a.clockOut);
+                            var s=getShift(a.shift);var sch=s?s.h:0;
+                            if(wh>0){if(sch>0&&wh>sch){tH+=sch;oH+=wh-sch;}else{tH+=wh;}}
+                          }
+                        }
                       }
+                      tH=Math.round(tH*10)/10;oH=Math.round(oH*10)/10;
                       return(
                         <div key={e.id} style={{display:"flex",alignItems:"center",padding:"8px 0",borderBottom:i<active.length-1?"1px solid #f0f2f5":"none",gap:8,fontSize:13,flexWrap:"wrap"}}>
                           <span style={{fontWeight:600,minWidth:50,flexShrink:0}}>{e.name}</span>
                           <span style={{color:"#5b9e6f",flexShrink:0}}>出勤 {on}天</span>
-                          <span style={{color:"#c0504d",flexShrink:0}}>遲到 {late}次</span>
+                          <span style={{color:"#34537d",flexShrink:0}}>{tH}h</span>
+                          {oH>0&&<span style={{color:"#c0504d",flexShrink:0}}>加班 {oH}h</span>}
+                          {late>0&&<span style={{color:"#c0504d",flexShrink:0}}>遲到 {late}次</span>}
                           <span style={{color:"#c4953a",flexShrink:0}}>請假 {leave}天</span>
                         </div>);
                     });
@@ -2827,7 +2864,7 @@ function KshipApp() {
                     </div>
                     <div style={{ marginBottom: 14 }}>
                       <span style={{ fontSize: 11, color: "#7a8a9e", fontWeight: 500, display: "block", marginBottom: 4 }}>選擇員工</span>
-                      <select value={calcEmpId} onChange={e => { const id = e.target.value; const emp = emps.find(x => String(x.id) === id); setCalcEmpId(id); setSaved(null); setCalcHours(""); setCalcOtHours(""); setCalcBonus(""); setCalcOther(""); setCalcTransfer(""); setCalcMonthSal(emp && emp.type === "正職員工" && emp.msalary ? String(emp.msalary) : ""); }} style={{ ...selStyle, cursor: "pointer" }}>
+                      <select value={calcEmpId} onChange={e => { const id = e.target.value; const emp = emps.find(x => String(x.id) === id); setCalcEmpId(id); setSaved(null); setCalcBonus(""); setCalcOther(""); setCalcTransfer(""); if(emp&&emp.type==="正職員工"&&emp.msalary){setCalcMonthSal(String(emp.msalary));setCalcHours("");setCalcOtHours("");}else if(emp){var ym=salMonth.replace('/','-');var sm=getMonthAtt(emp.empNo,ym);setCalcHours(sm.totalHours>0?String(sm.totalHours):"");setCalcOtHours(sm.otHours>0?String(sm.otHours):"");setCalcMonthSal("");}else{setCalcHours("");setCalcOtHours("");setCalcMonthSal("");} }} style={{ ...selStyle, cursor: "pointer" }}>
                         <option value="">請選擇員工</option>
                         {emps.filter(e => !e.resigned).map(e => <option key={e.id} value={e.id}>{e.name}（{e.type}{e.type === "正職員工" && e.msalary ? ` · 月薪 ${w(e.msalary)}` : ""}{e.type !== "正職員工" ? ` · ${w(e.rate)}/h` : ""}）</option>)}
                         {emps.filter(e => e.resigned).length > 0 && <option disabled>── 已離職 ──</option>}
@@ -2835,6 +2872,7 @@ function KshipApp() {
                       </select>
                     </div>
                     {calcEmp && (<>
+                      {!isFT&&(()=>{var ym=salMonth.replace('/','-');var sm=getMonthAtt(calcEmp.empNo,ym);return sm.days>0?(<div style={{background:"#e8f5e9",border:"1px solid #c8e6c9",borderRadius:6,padding:"8px 12px",marginBottom:10,fontSize:12,color:"#2e7d32"}}>📊 已從出勤記錄自動帶入：{sm.days}天 · 正常 {sm.totalHours}h{sm.otHours>0?(" · 加班 "+sm.otHours+"h"):""}（可手動調整）</div>):null;})()}
                       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 14 }}>
                         {isFT ? (<><Inp label="月薪 (₩)" type="number" placeholder="0" value={calcMonthSal} onChange={e => setCalcMonthSal(e.target.value)} /><Inp label="獎金 (₩)" type="number" placeholder="0" value={calcBonus} onChange={e => setCalcBonus(e.target.value)} /></>)
                         : (<><Inp label="工作時數（正常）" type="number" placeholder="0" value={calcHours} onChange={e => setCalcHours(e.target.value)} /><Inp label="加班時數（每日超過8h加總）" type="number" placeholder="0" value={calcOtHours} onChange={e => setCalcOtHours(e.target.value)} /><Inp label="獎金 (₩)" type="number" placeholder="0" value={calcBonus} onChange={e => setCalcBonus(e.target.value)} /></>)}
