@@ -22,6 +22,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
@@ -36,7 +37,7 @@ window.onerror = function(msg, url, line, col, error) {
 </script>
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef, useCallback } = React;
 
 // ===== Supabase 初始化 =====
 const SUPABASE_URL = 'https://zejkbveigebqiiwvosrd.supabase.co';
@@ -325,6 +326,17 @@ function KshipApp() {
   const [calcTransfer, setCalcTransfer] = useState("");
   const [calcMonthSal, setCalcMonthSal] = useState("");
   const [saved, setSaved] = useState(null);
+  const salaryCardRef = useRef(null);
+  const handleSaveImage = useCallback(() => {
+    if (!salaryCardRef.current || !saved) return;
+    const node = salaryCardRef.current;
+    html2canvas(node, { backgroundColor: null, scale: 3, useCORS: true, allowTaint: true }).then(canvas => {
+      const link = document.createElement('a');
+      link.download = (saved.month || '') + '_' + (saved.empName || '') + '_薪資明細.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    });
+  }, [saved]);
   const initRecords = () => { try { var s=JSON.parse(localStorage.getItem('hj_salary_records')); if(s&&s.length) return s; } catch(e){} return []; };
   const [records, setRecords] = useState(initRecords);
   const [salMonth, setSalMonth] = useState(curMonth);
@@ -2683,7 +2695,7 @@ function KshipApp() {
                   </div>
                 ) : (
                   <div>
-                    <div style={{ background: "#fff", borderRadius: 10, overflow: "hidden", border: "1px solid #dce3ed", maxWidth: 400, margin: "0 auto" }}>
+                    <div ref={salaryCardRef} style={{ background: "#fff", borderRadius: 10, overflow: "hidden", border: "1px solid #dce3ed", maxWidth: 400, margin: "0 auto" }}>
                       <div style={{ background: "#34537d", padding: "24px 20px 18px", color: "#fff", textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center" }}>
                         <img src={LOGO_SRC} alt="logo" style={{ width: 48, height: 48, marginBottom: 10 }} />
                         <div style={{ fontSize: 10, opacity: .7, marginBottom: 3, letterSpacing: 2 }}>韓集集運 SALARY STATEMENT</div>
@@ -2711,7 +2723,7 @@ function KshipApp() {
                       </div>
                       <div style={{ textAlign: "center", padding: "8px 0 14px", fontSize: 10, color: "#8a9ab0" }}>{new Date().toLocaleDateString()}</div>
                     </div>
-                    <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}><button onClick={clearCalc} style={{ padding: "10px 22px", ...btnP, fontSize: 14 }}>計算下一位</button></div>
+                    <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 16 }}><button onClick={handleSaveImage} style={{ padding: "10px 22px", ...btnP, fontSize: 14, background: "#5b9e6f" }}>📸 儲存圖片</button><button onClick={clearCalc} style={{ padding: "10px 22px", ...btnP, fontSize: 14 }}>計算下一位</button></div>
                   </div>
                 )}
                 {records.length > 0 && !saved && (() => {
