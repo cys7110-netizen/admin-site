@@ -142,6 +142,23 @@ function calcTax(amount) {
   return { incomeTax, localTax, total: incomeTax + localTax, net: amount - incomeTax - localTax };
 }
 
+// ═══ Shift / Attendance Constants ═══
+const SHIFTS = [
+  { k:"A", l:"12-18", t:"12:00~18:00", h:6, c:"#34537d", bg:"#dce8f4" },
+  { k:"B", l:"15-21", t:"15:00~21:00", h:6, c:"#5b9e6f", bg:"#ddf0e0" },
+  { k:"C", l:"17-23", t:"17:00~23:00", h:6, c:"#c4953a", bg:"#f5ead4" },
+  { k:"D", l:"18-00", t:"18:00~00:00", h:6, c:"#7b6ba5", bg:"#eae4f4" },
+  { k:"E", l:"20-02", t:"20:00~02:00", h:6, c:"#c0504d", bg:"#f4dede" },
+  { k:"休", l:"休假", t:"休假", h:0, c:"#8a9ab0", bg:"#eef0f2" },
+];
+const SHIFT_KEYS = SHIFTS.map(s=>s.k);
+function getShift(k){ return SHIFTS.find(s=>s.k===k)||null; }
+function getMonday(d){ var dt=new Date(d); var day=dt.getDay(); var diff=dt.getDate()-day+(day===0?-6:1); dt.setDate(diff); return dt.toISOString().slice(0,10); }
+function fmtDate(d){ return d.slice(0,4)+'/'+d.slice(5,7)+'/'+d.slice(8,10); }
+function weekLabel(mon){ var d=new Date(mon); var sun=new Date(d); sun.setDate(d.getDate()+6); return (d.getMonth()+1)+'/'+d.getDate()+' ~ '+(sun.getMonth()+1)+'/'+sun.getDate(); }
+function dayLabels(mon){ var arr=[]; for(var i=0;i<7;i++){ var d=new Date(mon); d.setDate(d.getDate()+i); var wd=["日","一","二","三","四","五","六"][d.getDay()]; arr.push({d:d.toISOString().slice(0,10),wd:wd,dd:(d.getMonth()+1)+'/'+ d.getDate()}); } return arr; }
+const ATT_STATUS = [{k:"出勤",c:"#5b9e6f"},{k:"請假",c:"#c4953a"},{k:"遲到",c:"#c0504d"},{k:"未到",c:"#8a9ab0"}];
+
 function useIsMobile() {
   const [m, setM] = useState(window.innerWidth < 700);
   useEffect(() => { const h = () => setM(window.innerWidth < 700); window.addEventListener("resize", h); return () => window.removeEventListener("resize", h); }, []);
@@ -218,7 +235,7 @@ const NAV = [
   ]},
 ];
 
-const DONE_PAGES = ["hr-employees", "hr-salary", "hr-visa"];
+const DONE_PAGES = ["hr-employees", "hr-salary", "hr-visa", "hr-attendance", "hr-schedule"];
 
 function Placeholder({ title }) {
   return (
@@ -341,6 +358,28 @@ function KshipApp() {
   const [records, setRecords] = useState(initRecords);
   const [salMonth, setSalMonth] = useState(curMonth);
 
+  // ── 出勤管理 State（localStorage + Supabase 雲端）──
+  const [attDate, setAttDate] = useState(new Date().toISOString().slice(0,10));
+  const [attData, setAttData] = useState(()=>{ try{var d=JSON.parse(localStorage.getItem('hj_attendance'));return d||{};} catch(e){return {};} });
+  const saveAttCloud = async (nd)=>{
+    try{ await sb.from('finance_records').upsert({ type:'attendance_snapshot', record_type:'attendance_snapshot', amount:0, description:JSON.stringify(nd), date:new Date().toISOString().slice(0,10) },{ onConflict:'type' }); }catch(e){ console.log('出勤雲端儲存失敗:',e); }
+  };
+  const saveAtt = (nd)=>{ setAttData(nd); try{localStorage.setItem('hj_attendance',JSON.stringify(nd));}catch(e){} saveAttCloud(nd); };
+  const getAtt = (date,empNo)=>((attData[date]||{})[empNo])||null;
+  const setAttRecord = (date,empNo,rec)=>{ var nd={...attData}; if(!nd[date])nd[date]={}; nd[date]={...nd[date],[empNo]:rec}; saveAtt(nd); };
+  const delAttRecord = (date,empNo)=>{ var nd={...attData}; if(nd[date]){var dd={...nd[date]}; delete dd[empNo]; nd[date]=dd;} saveAtt(nd); };
+
+  // ── 排班管理 State（localStorage + Supabase 雲端）──
+  const [schWeek, setSchWeek] = useState(getMonday(new Date().toISOString().slice(0,10)));
+  const [schData, setSchData] = useState(()=>{ try{var d=JSON.parse(localStorage.getItem('hj_schedule'));return d||{};} catch(e){return {};} });
+  const saveSchCloud = async (nd)=>{
+    try{ await sb.from('finance_records').upsert({ type:'schedule_snapshot', record_type:'schedule_snapshot', amount:0, description:JSON.stringify(nd), date:new Date().toISOString().slice(0,10) },{ onConflict:'type' }); }catch(e){ console.log('排班雲端儲存失敗:',e); }
+  };
+  const saveSch = (nd)=>{ setSchData(nd); try{localStorage.setItem('hj_schedule',JSON.stringify(nd));}catch(e){} saveSchCloud(nd); };
+  const getSchShift = (week,empNo,dayIdx)=>{var w=schData[week]; if(!w)return""; var e=w[empNo]; if(!e)return""; return e[dayIdx]||"";};
+  const setSchShift = (week,empNo,dayIdx,val)=>{ var nd={...schData}; if(!nd[week])nd[week]={}; var ea=nd[week][empNo]?[...nd[week][empNo]]:["","","","","","",""]; ea[dayIdx]=val; nd[week]={...nd[week],[empNo]:ea}; saveSch(nd); };
+  const copyWeek = (fromWeek,toWeek)=>{ if(!schData[fromWeek]){alert('來源週無排班資料');return;} var nd={...schData,[toWeek]:{...schData[fromWeek]}}; saveSch(nd); alert('已複製排班！'); };
+
   // ── 年度/月報表（2023/6~2026/6手動，2026/7起自動）──
   const initAnnual = () => {
     var rows = [];
@@ -403,6 +442,20 @@ function KshipApp() {
           if(parsed2 && parsed2.length) { setRecords(parsed2); console.log('💰 薪資記錄：已從 Supabase 載入'); }
         }
       } catch(e) { console.log('薪資記錄 Supabase 載入失敗，使用本地資料'); }
+      try {
+        var { data: attCloud } = await sb.from('finance_records').select('*').eq('type','attendance_snapshot').limit(1);
+        if(attCloud && attCloud.length > 0 && attCloud[0].description) {
+          var parsedAtt = JSON.parse(attCloud[0].description);
+          if(parsedAtt && typeof parsedAtt === 'object') { setAttData(parsedAtt); console.log('🕐 出勤記錄：已從 Supabase 載入'); }
+        }
+      } catch(e) { console.log('出勤記錄 Supabase 載入失敗，使用本地資料'); }
+      try {
+        var { data: schCloud } = await sb.from('finance_records').select('*').eq('type','schedule_snapshot').limit(1);
+        if(schCloud && schCloud.length > 0 && schCloud[0].description) {
+          var parsedSch = JSON.parse(schCloud[0].description);
+          if(parsedSch && typeof parsedSch === 'object') { setSchData(parsedSch); console.log('📋 排班資料：已從 Supabase 載入'); }
+        }
+      } catch(e) { console.log('排班資料 Supabase 載入失敗，使用本地資料'); }
     })();
   }, []);
   const handleAnnualDblClick = (rowIdx, field) => { setEditCell({row:rowIdx,field}); setEditVal2(String(annualData[rowIdx][field]||0)); };
@@ -1827,8 +1880,9 @@ function KshipApp() {
                         </div>
                         {isOpen && (
                           <div style={{padding:"0 18px 14px",background:"#f8fafc"}}>
-                            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,marginTop:8}}>
-                              <thead><tr>{["月份","營收","支出","利潤","總重量(kg)","出貨件數","利潤率"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:h==="月份"?"left":"right",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed"}}>{h}</th>)}</tr></thead>
+                            <div style={{overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+                            <table style={{minWidth:520,width:"100%",borderCollapse:"collapse",fontSize:13,marginTop:8}}>
+                              <thead><tr>{["月份","營收","支出","利潤","總重量(kg)","出貨件數","利潤率"].map(h=><th key={h} style={{padding:"6px 8px",textAlign:h==="月份"?"left":"right",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
                               <tbody>
                                 {yd.map((r,mi)=>{
                                   var gi=annualData.indexOf(r);
@@ -1837,17 +1891,18 @@ function KshipApp() {
                                   var isE=editCell&&editCell.row===gi;
                                   var editInput=(field,color)=>isE&&editCell.field===field?<input autoFocus value={editVal} onChange={e=>setEditVal2(e.target.value)} onBlur={handleAnnualSave} onKeyDown={e=>{if(e.key==="Enter")handleAnnualSave()}} style={{width:80,textAlign:"right",border:"1.5px solid "+color,borderRadius:4,padding:"2px 6px",fontSize:13,outline:"none"}}/>:null;
                                   return(<tr key={mi} style={{borderBottom:"1px solid #eef2f7"}}>
-                                    <td style={{padding:"6px 8px",fontWeight:500}}>{r.month.split('/')[1]}月</td>
-                                    <td style={{padding:"6px 8px",textAlign:"right",cursor:"pointer"}} onDoubleClick={()=>handleAnnualDblClick(gi,"rev")}>{editInput("rev","#34537d")||w(r.rev)}</td>
-                                    <td style={{padding:"6px 8px",textAlign:"right",color:"#c0504d",cursor:"pointer"}} onDoubleClick={()=>handleAnnualDblClick(gi,"exp")}>{editInput("exp","#c0504d")||w(r.exp)}</td>
-                                    <td style={{padding:"6px 8px",textAlign:"right",color:profit>=0?"#5b9e6f":"#c0504d",fontWeight:600}}>{w(profit)}</td>
-                                    <td style={{padding:"6px 8px",textAlign:"right",cursor:"pointer"}} onDoubleClick={()=>handleAnnualDblClick(gi,"weight")}>{editInput("weight","#7b6ba5")||(r.weight||0).toLocaleString()}</td>
-                                    <td style={{padding:"6px 8px",textAlign:"right",cursor:"pointer"}} onDoubleClick={()=>handleAnnualDblClick(gi,"shipCount")}>{editInput("shipCount","#5b9e6f")||(r.shipCount||0)}</td>
-                                    <td style={{padding:"6px 8px",textAlign:"right"}}>{rate}%</td>
+                                    <td style={{padding:"6px 8px",fontWeight:500,whiteSpace:"nowrap"}}>{r.month.split('/')[1]}月</td>
+                                    <td style={{padding:"6px 8px",textAlign:"right",cursor:"pointer",whiteSpace:"nowrap"}} onDoubleClick={()=>handleAnnualDblClick(gi,"rev")}>{editInput("rev","#34537d")||w(r.rev)}</td>
+                                    <td style={{padding:"6px 8px",textAlign:"right",color:"#c0504d",cursor:"pointer",whiteSpace:"nowrap"}} onDoubleClick={()=>handleAnnualDblClick(gi,"exp")}>{editInput("exp","#c0504d")||w(r.exp)}</td>
+                                    <td style={{padding:"6px 8px",textAlign:"right",color:profit>=0?"#5b9e6f":"#c0504d",fontWeight:600,whiteSpace:"nowrap"}}>{w(profit)}</td>
+                                    <td style={{padding:"6px 8px",textAlign:"right",cursor:"pointer",whiteSpace:"nowrap"}} onDoubleClick={()=>handleAnnualDblClick(gi,"weight")}>{editInput("weight","#7b6ba5")||(r.weight||0).toLocaleString()}</td>
+                                    <td style={{padding:"6px 8px",textAlign:"right",cursor:"pointer",whiteSpace:"nowrap"}} onDoubleClick={()=>handleAnnualDblClick(gi,"shipCount")}>{editInput("shipCount","#5b9e6f")||(r.shipCount||0)}</td>
+                                    <td style={{padding:"6px 8px",textAlign:"right",whiteSpace:"nowrap"}}>{rate}%</td>
                                   </tr>);
                                 })}
                               </tbody>
                             </table>
+                            </div>
                           </div>
                         )}
                       </div>);
@@ -2127,77 +2182,178 @@ function KshipApp() {
             {/* ═══ 出勤管理 ═══ */}
             {tab === "hr-attendance" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:2}}>
-                  <span style={{fontSize:13,color:"#4a5568"}}>日期</span>
-                  <input type="date" defaultValue={new Date().toISOString().slice(0,10)} style={{...selStyle,width:"auto"}} />
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <span style={{fontSize:13,fontWeight:600,color:"#34537d"}}>日期</span>
+                  <input type="date" value={attDate} onChange={e=>setAttDate(e.target.value)} style={{...selStyle,width:"auto"}} />
+                  <button onClick={()=>setAttDate(new Date().toISOString().slice(0,10))} style={{...btnS,fontSize:12,padding:"7px 12px"}}>今天</button>
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4, 1fr)",gap:10}}>
-                  {[{l:"出勤",v:`${emps.filter(e=>!e.resigned).length}人`,c:"#5b9e6f"},{l:"請假",v:"—",c:"#c4953a"},{l:"加班",v:"—",c:"#7b6ba5"},{l:"未到",v:"—",c:"#8a9ab0"}].map((s,i)=>(
-                    <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}>
-                      <div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
+                {(()=>{
+                  var active=emps.filter(e=>!e.resigned);
+                  var dayAtt=attData[attDate]||{};
+                  var cntOn=0,cntOff=0,cntLate=0,cntLeave=0;
+                  active.forEach(e=>{var a=dayAtt[e.empNo]; if(!a)cntOff++; else if(a.status==="出勤")cntOn++; else if(a.status==="遲到"){cntOn++;cntLate++;} else if(a.status==="請假")cntLeave++; else cntOff++;});
+                  return(<>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4, 1fr)",gap:8}}>
+                  {[{l:"出勤",v:cntOn,c:"#5b9e6f"},{l:"請假",v:cntLeave,c:"#c4953a"},{l:"遲到",v:cntLate,c:"#c0504d"},{l:"未記錄",v:cntOff,c:"#8a9ab0"}].map((s,i)=>(
+                    <div key={i} style={{background:"#fff",borderRadius:8,padding:"10px 6px",border:"1px solid #dce3ed",textAlign:"center"}}>
+                      <div style={{fontSize:11,color:"#8a9ab0",marginBottom:2}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
                 </div>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>今日出勤列表</h3>
-                  {emps.filter(e=>!e.resigned).map((e,i)=>{
-                    const att = {s:"— 待記錄",t:"尚未連接考勤系統",h:"",c:"#8a9ab0"};
-                    return (
-                      <div key={e.id} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<emps.filter(x=>!x.resigned).length-1?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
-                        <span style={{color:"#8a9ab0",minWidth:40}}>{e.empNo}</span>
-                        <span style={{fontWeight:600,flex:1,minWidth:50}}>{e.name}</span>
-                        <span style={{color:att.c,fontWeight:600}}>{att.s}</span>
-                        <span style={{color:"#8a9ab0",fontSize:12}}>{att.t}</span>
-                        {att.h && <span style={{fontSize:12,fontWeight:600}}>{att.h}</span>}
+                <div style={{background:"#fff",borderRadius:8,border:"1px solid #dce3ed"}}>
+                  <div style={{padding:"12px 16px",borderBottom:"1px solid #eef2f7",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <h3 style={{fontSize:14,fontWeight:600,margin:0,color:"#34537d"}}>{fmtDate(attDate)} 出勤記錄</h3>
+                    <span style={{fontSize:12,color:"#8a9ab0"}}>{active.length} 位員工</span>
+                  </div>
+                  <div style={{padding:"0 16px"}}>
+                  {active.map((e,i)=>{
+                    var a=dayAtt[e.empNo]||null;
+                    var schW=getMonday(attDate);
+                    var dayIdx=new Date(attDate).getDay(); dayIdx=dayIdx===0?6:dayIdx-1;
+                    var planned=getSchShift(schW,e.empNo,dayIdx);
+                    var ps=getShift(planned);
+                    return(
+                      <div key={e.id} style={{padding:"12px 0",borderBottom:i<active.length-1?"1px solid #f0f2f5":"none"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+                          <span style={{color:"#8a9ab0",fontSize:12,flexShrink:0}}>{e.empNo}</span>
+                          <span style={{fontWeight:600,fontSize:14,flexShrink:0}}>{e.name}</span>
+                          {ps&&<span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:ps.bg,color:ps.c,fontWeight:600,flexShrink:0}}>排班 {ps.t}</span>}
+                          {!ps&&planned!==""&&<span style={{fontSize:11,color:"#8a9ab0"}}>排班 {planned}</span>}
+                        </div>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center",fontSize:13}}>
+                          {ATT_STATUS.map(st=>(
+                            <button key={st.k} onClick={()=>{
+                              var old=a||{};
+                              if(old.status===st.k){ delAttRecord(attDate,e.empNo); return; }
+                              var clockIn=old.clockIn||(ps?ps.t.split("~")[0]:"");
+                              var clockOut=old.clockOut||(ps?ps.t.split("~")[1]:"");
+                              setAttRecord(attDate,e.empNo,{...old,status:st.k,clockIn:clockIn,clockOut:clockOut,shift:planned});
+                            }} style={{padding:"4px 10px",borderRadius:5,border:a&&a.status===st.k?"2px solid "+st.c:"1px solid #dce3ed",background:a&&a.status===st.k?st.c+"18":"#fff",color:a&&a.status===st.k?st.c:"#8a9ab0",fontWeight:600,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>{st.k}</button>
+                          ))}
+                          {a&&a.status&&(a.status==="出勤"||a.status==="遲到")&&(
+                            <>
+                            <input type="time" value={a.clockIn||""} onChange={ev=>{setAttRecord(attDate,e.empNo,{...a,clockIn:ev.target.value});}} style={{border:"1px solid #dce3ed",borderRadius:4,padding:"3px 6px",fontSize:12,fontFamily:"inherit",width:90}} />
+                            <span style={{color:"#8a9ab0"}}>~</span>
+                            <input type="time" value={a.clockOut||""} onChange={ev=>{setAttRecord(attDate,e.empNo,{...a,clockOut:ev.target.value});}} style={{border:"1px solid #dce3ed",borderRadius:4,padding:"3px 6px",fontSize:12,fontFamily:"inherit",width:90}} />
+                            </>
+                          )}
+                          {a&&a.status==="請假"&&(
+                            <input placeholder="事由" value={a.note||""} onChange={ev=>{setAttRecord(attDate,e.empNo,{...a,note:ev.target.value});}} style={{border:"1px solid #dce3ed",borderRadius:4,padding:"3px 8px",fontSize:12,fontFamily:"inherit",flex:1,minWidth:80}} />
+                          )}
+                        </div>
                       </div>);
                   })}
+                  </div>
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>本月出勤統計</h3>
-                  {emps.filter(e=>!e.resigned).map((e,i)=>(
-                    <div key={e.id} style={{display:"flex",alignItems:"center",padding:"8px 0",borderBottom:i<emps.filter(x=>!x.resigned).length-1?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
-                      <span style={{fontWeight:600,flex:1,minWidth:50}}>{e.name}</span>
-                      <span style={{color:"#5b9e6f"}}>出勤 —</span>
-                      <span style={{color:"#c4953a"}}>請假 —</span>
-                      <span style={{color:"#7b6ba5"}}>加班 —</span>
-                    </div>))}
+                  {(()=>{
+                    var ym=attDate.slice(0,7);
+                    var daysInMonth=new Date(+ym.slice(0,4),+ym.slice(5,7),0).getDate();
+                    return active.map((e,i)=>{
+                      var on=0,late=0,leave=0;
+                      for(var d=1;d<=daysInMonth;d++){
+                        var dk=ym+'-'+String(d).padStart(2,'0');
+                        var a=(attData[dk]||{})[e.empNo];
+                        if(a){if(a.status==="出勤")on++;else if(a.status==="遲到"){on++;late++;}else if(a.status==="請假")leave++;}
+                      }
+                      return(
+                        <div key={e.id} style={{display:"flex",alignItems:"center",padding:"8px 0",borderBottom:i<active.length-1?"1px solid #f0f2f5":"none",gap:8,fontSize:13,flexWrap:"wrap"}}>
+                          <span style={{fontWeight:600,minWidth:50,flexShrink:0}}>{e.name}</span>
+                          <span style={{color:"#5b9e6f",flexShrink:0}}>出勤 {on}天</span>
+                          <span style={{color:"#c0504d",flexShrink:0}}>遲到 {late}次</span>
+                          <span style={{color:"#c4953a",flexShrink:0}}>請假 {leave}天</span>
+                        </div>);
+                    });
+                  })()}
                 </div>
+                </>);
+                })()}
               </div>
             )}
 
             {/* ═══ 排班管理 ═══ */}
             {tab === "hr-schedule" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:2}}>
-                  <span style={{fontSize:13,color:"#4a5568"}}>週別</span>
-                  <select style={{...selStyle,width:"auto",minWidth:140}}><option>5/26 - 6/1</option><option>6/2 - 6/8</option><option>6/9 - 6/15</option></select>
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <button onClick={()=>{var d=new Date(schWeek);d.setDate(d.getDate()-7);setSchWeek(d.toISOString().slice(0,10));}} style={{...btnS,padding:"6px 10px",fontSize:14}}>◀</button>
+                  <span style={{fontSize:14,fontWeight:700,color:"#34537d",minWidth:120,textAlign:"center"}}>{weekLabel(schWeek)}</span>
+                  <button onClick={()=>{var d=new Date(schWeek);d.setDate(d.getDate()+7);setSchWeek(d.toISOString().slice(0,10));}} style={{...btnS,padding:"6px 10px",fontSize:14}}>▶</button>
+                  <button onClick={()=>setSchWeek(getMonday(new Date().toISOString().slice(0,10)))} style={{...btnS,fontSize:12,padding:"6px 12px"}}>本週</button>
+                  <button onClick={()=>{var prev=new Date(schWeek);prev.setDate(prev.getDate()-7);copyWeek(prev.toISOString().slice(0,10),schWeek);}} style={{...btnS,fontSize:12,padding:"6px 12px",background:"#e8f5e9",color:"#5b9e6f"}}>📋 複製上週</button>
                 </div>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",overflowX:"auto"}}>
-                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:500}}>
-                    <thead><tr><th style={{padding:8,textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}></th>
-                      {["週一","週二","週三","週四","週五","週六","週日"].map(d=><th key={d} style={{padding:8,textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>{d}</th>)}
-                    </tr></thead>
-                    <tbody>
-                      {emps.filter(e=>!e.resigned).slice(0,6).map(function(e){return{n:e.name,s:["早","早","早","早","早","休","休"]};}).filter(function(r){return r.n;}).map((r,i)=>(
-                        <tr key={i} style={{borderBottom:"1px solid #f0f2f5"}}>
-                          <td style={{padding:8,fontWeight:600}}>{r.n}</td>
-                          {r.s.map((c,j)=>(
-                            <td key={j} style={{padding:8,textAlign:"center"}}>
-                              <span style={{display:"inline-block",padding:"4px 10px",borderRadius:5,fontSize:12,fontWeight:600,
-                                background: c==="早"?"#e8edf4":c==="午"?"#fdf9f0":c==="休"?"#f0fdf4":"#f5f5f5",
-                                color: c==="早"?"#34537d":c==="午"?"#c4953a":c==="休"?"#5b9e6f":"#8a9ab0"
-                              }}>{c}</span>
-                            </td>))}
-                        </tr>))}
-                    </tbody>
-                  </table>
+                <div style={{background:"#fff",borderRadius:8,border:"1px solid #dce3ed",overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
+                  {(()=>{
+                    var days=dayLabels(schWeek);
+                    var active=emps.filter(e=>!e.resigned);
+                    return(
+                    <table style={{minWidth:560,width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{background:"#f8fafc"}}>
+                          <th style={{padding:"8px 10px",textAlign:"left",fontSize:12,color:"#34537d",borderBottom:"2px solid #dce3ed",position:"sticky",left:0,background:"#f8fafc",zIndex:2,minWidth:60}}>員工</th>
+                          {days.map((d,i)=>{
+                            var isToday=d.d===new Date().toISOString().slice(0,10);
+                            return <th key={i} style={{padding:"6px 4px",textAlign:"center",fontSize:11,borderBottom:"2px solid #dce3ed",color:isToday?"#34537d":"#8a9ab0",background:isToday?"#e8edf4":"#f8fafc",minWidth:58}}>
+                              <div style={{fontWeight:isToday?700:500}}>{d.dd}</div><div style={{fontSize:10}}>{d.wd}</div>
+                            </th>;
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {active.map((e)=>(
+                          <tr key={e.id} style={{borderBottom:"1px solid #f0f2f5"}}>
+                            <td style={{padding:"6px 10px",fontWeight:600,whiteSpace:"nowrap",position:"sticky",left:0,background:"#fff",zIndex:1,fontSize:13}}>{e.name}</td>
+                            {days.map((d,di)=>{
+                              var val=getSchShift(schWeek,e.empNo,di);
+                              var s=getShift(val);
+                              return <td key={di} style={{padding:"4px 2px",textAlign:"center"}}>
+                                <button onClick={()=>{
+                                  var ci=val?SHIFT_KEYS.indexOf(val):-1;
+                                  var next=ci>=SHIFT_KEYS.length-1?"":(SHIFT_KEYS[ci+1]);
+                                  setSchShift(schWeek,e.empNo,di,next);
+                                }} style={{display:"block",width:"100%",padding:"6px 2px",borderRadius:5,border:"1px solid "+(s?s.c+"40":"#e4e9f0"),background:s?s.bg:"#fafafa",color:s?s.c:"#ccc",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"inherit",lineHeight:1.2,minHeight:36}}>
+                                  {s?s.l:"—"}
+                                </button>
+                              </td>;
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>);
+                  })()}
                 </div>
-                <div style={{background:"#f5f8fc",borderRadius:8,padding:14,border:"1px solid #e4e9f0",fontSize:12,color:"#8a9ab0"}}>
-                  <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
-                    <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"#e8edf4",marginRight:4}}/>早班 09:00-18:00</span>
-                    <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"#fdf9f0",marginRight:4}}/>午班 13:00-22:00</span>
-                    <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"#f0fdf4",marginRight:4}}/>休假</span>
-                    <span><span style={{display:"inline-block",width:10,height:10,borderRadius:3,background:"#f5f5f5",marginRight:4}}/>未排班</span>
+                <div style={{background:"#f5f8fc",borderRadius:8,padding:"10px 14px",border:"1px solid #e4e9f0"}}>
+                  <div style={{fontSize:12,color:"#8a9ab0",marginBottom:6,fontWeight:600}}>班別說明（點擊格子切換）</div>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap",fontSize:12}}>
+                    {SHIFTS.map(s=>(
+                      <span key={s.k} style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{display:"inline-block",width:12,height:12,borderRadius:3,background:s.bg,border:"1px solid "+s.c+"60"}}/>
+                        <span style={{color:s.c,fontWeight:600}}>{s.l}</span>
+                        <span style={{color:"#8a9ab0"}}>{s.t}</span>
+                      </span>
+                    ))}
                   </div>
                 </div>
+                {(()=>{
+                  var active=emps.filter(e=>!e.resigned);
+                  var wk=schData[schWeek]||{};
+                  var summary=active.map(e=>{
+                    var arr=wk[e.empNo]||[];
+                    var shifts=0,hours=0,rest=0;
+                    arr.forEach(v=>{var s=getShift(v);if(s){if(s.k==="休")rest++;else{shifts++;hours+=s.h;}}});
+                    return{name:e.name,shifts:shifts,hours:hours,rest:rest};
+                  });
+                  return(
+                  <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
+                    <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 10px",color:"#34537d"}}>本週統計</h3>
+                    {summary.map((s,i)=>(
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",borderBottom:i<summary.length-1?"1px solid #f0f2f5":"none",fontSize:13,flexWrap:"wrap"}}>
+                        <span style={{fontWeight:600,minWidth:50,flexShrink:0}}>{s.name}</span>
+                        <span style={{color:"#34537d"}}>上班 {s.shifts}天</span>
+                        <span style={{color:"#5b9e6f"}}>{s.hours}小時</span>
+                        <span style={{color:"#8a9ab0"}}>休假 {s.rest}天</span>
+                      </div>
+                    ))}
+                  </div>);
+                })()}
               </div>
             )}
 
