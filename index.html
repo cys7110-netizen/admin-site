@@ -302,33 +302,38 @@ function KshipApp() {
 
   // ── 即時營運統計（Supabase 連動，KST 00:00 歸零）──
   const [dailyStats, setDailyStats] = useState({inbound:'-',shipped:'-',pendingShip:'-',unclaimed:'-'});
-  useEffect(() => {
-    async function loadDailyStats() {
-      try {
-        // 韓國時間今天起訖（用數值比較，避免字串格式差異）
-        var range = getKSTTodayRange();
+  const [lastRefresh, setLastRefresh] = useState('');
+  const refreshStats = useCallback(async function(){
+    try {
+      var range = getKSTTodayRange();
+      var startISO = new Date(range.startMs).toISOString();
+      var endISO = new Date(range.endMs).toISOString();
 
-        // 撈全部包裹 + 任務（select('*') 避免欄位不存在）
-        var { data:allPkg } = await sb.from('packages').select('*');
-        var inbound = (allPkg||[]).filter(function(p){
-          return pkgInRange(p, range.startMs, range.endMs);
-        }).length;
-        var unclaimed = (allPkg||[]).filter(function(p){ return p.status === 'unclaimed'; }).length;
-        var { data:allTasks } = await sb.from('tasks').select('*');
-        var shipped = (allTasks||[]).filter(function(t){
-          return (t.task_type==='ship'||t.type==='ship') && (t.status==='completed'||t.status==='paid')
-            && isInRange(t.created_at, range.startMs, range.endMs);
-        }).length;
-        var pendingShip = (allTasks||[]).filter(function(t){
-          return (t.task_type==='ship'||t.type==='ship') && t.status==='pending';
-        }).length;
-        setDailyStats({ inbound: inbound, shipped: shipped, pendingShip: pendingShip, unclaimed: unclaimed });
-        console.log('📊 管理端統計 (KST):', {inbound, shipped, pendingShip, unclaimed, rangeUTC: new Date(range.startMs).toISOString()+' ~ '+new Date(range.endMs).toISOString()});
-      } catch(e) { console.error('loadDailyStats:', e); }
-    }
-    if(loggedIn) { loadDailyStats(); loadInboundDetail(); loadPerformance(); }
-    if(loggedIn) { var iv = setInterval(function(){ loadDailyStats(); loadInboundDetail(); loadPerformance(); }, 10000); return ()=>clearInterval(iv); }
-  }, [loggedIn]);
+      // 今日入庫：scanned_at 在今天 OR (scanned_at 為空 AND created_at 在今天)
+      var {data:p1} = await sb.from('packages').select('id').gte('scanned_at', startISO).lt('scanned_at', endISO);
+      var {data:p2} = await sb.from('packages').select('id').is('scanned_at', null).gte('created_at', startISO).lt('created_at', endISO);
+      var inbound = (p1?.length||0) + (p2?.length||0);
+
+      // 異常件
+      var {data:pU} = await sb.from('packages').select('id').eq('status','unclaimed');
+      var unclaimed = pU?.length||0;
+
+      // 今日出貨 + 待出貨
+      var {data:tShipped} = await sb.from('tasks').select('id').or('task_type.eq.ship,type.eq.ship').in('status',['completed','paid']).gte('created_at', startISO).lt('created_at', endISO);
+      var shipped = tShipped?.length||0;
+      var {data:tPending} = await sb.from('tasks').select('id').or('task_type.eq.ship,type.eq.ship').eq('status','pending');
+      var pendingShip = tPending?.length||0;
+
+      setDailyStats({ inbound, shipped, pendingShip, unclaimed });
+      var k=toKST();
+      setLastRefresh(String(k.getUTCHours()).padStart(2,'0')+':'+String(k.getUTCMinutes()).padStart(2,'0')+':'+String(k.getUTCSeconds()).padStart(2,'0'));
+    } catch(e) { console.error('loadDailyStats:', e); }
+  },[]);
+  function toKST(){var n=new Date(),ms=n.getTime()+(9*60+n.getTimezoneOffset())*60000;return new Date(ms)}
+  useEffect(() => {
+    if(loggedIn) { refreshStats(); loadInboundDetail(); loadPerformance(); }
+    if(loggedIn) { var iv = setInterval(function(){ refreshStats(); loadInboundDetail(); loadPerformance(); }, 15000); return ()=>clearInterval(iv); }
+  }, [loggedIn, refreshStats]);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -1147,7 +1152,13 @@ function KshipApp() {
 
         {/* 今日營運 */}
         <div style={{ background: "#fff", borderRadius: 8, padding: 16, border: "1px solid #dce3ed" }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, margin: "0 0 14px", color: "#1e2a3a" }}>今日營運</h3>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700, margin: 0, color: "#1e2a3a" }}>今日營運</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {lastRefresh && <span style={{ fontSize: 11, color: "#8a9ab0" }}>KST {lastRefresh}</span>}
+              <button onClick={()=>{refreshStats();loadInboundDetail();loadPerformance()}} style={{ background: "#34537d", border: "none", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: "#fff", fontWeight: 600, fontFamily: "inherit" }}>🔄 更新</button>
+            </div>
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {[
               { label: "今日入庫", value: String(dailyStats.inbound), unit: "件", color: "#34537d", click: ()=>{loadInboundDetail();switchTab("dash-inbound");} },
