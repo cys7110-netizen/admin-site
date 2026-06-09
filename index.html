@@ -416,6 +416,7 @@ function KshipApp() {
   const getSchShift = (week,empNo,dayIdx)=>{var w=schData[week]; if(!w)return""; var e=w[empNo]; if(!e)return""; return e[dayIdx]||"";};
   const setSchShift = (week,empNo,dayIdx,val)=>{ var nd={...schData}; if(!nd[week])nd[week]={}; var ea=nd[week][empNo]?[...nd[week][empNo]]:["","","","","","",""]; ea[dayIdx]=val; nd[week]={...nd[week],[empNo]:ea}; saveSch(nd); };
   const copyWeek = (fromWeek,toWeek)=>{ if(!schData[fromWeek]){alert('來源週無排班資料');return;} var nd={...schData,[toWeek]:{...schData[fromWeek]}}; saveSch(nd); alert('已複製排班！'); };
+  const [schPicker, setSchPicker] = useState(null); // {empNo, dayIdx, x, y}
 
   // ── 年度/月報表（2023/6~2026/6手動，2026/7起自動）──
   const initAnnual = () => {
@@ -2348,10 +2349,9 @@ function KshipApp() {
                               var val=getSchShift(schWeek,e.empNo,di);
                               var s=getShift(val);
                               return <td key={di} style={{padding:"4px 2px",textAlign:"center"}}>
-                                <button onClick={()=>{
-                                  var ci=val?SHIFT_KEYS.indexOf(val):-1;
-                                  var next=ci>=SHIFT_KEYS.length-1?"":(SHIFT_KEYS[ci+1]);
-                                  setSchShift(schWeek,e.empNo,di,next);
+                                <button onClick={(ev)=>{
+                                  var rect=ev.currentTarget.getBoundingClientRect();
+                                  setSchPicker({empNo:e.empNo,dayIdx:di,x:rect.left+rect.width/2,y:rect.bottom+4});
                                 }} style={{display:"block",width:"100%",padding:"6px 2px",borderRadius:5,border:"1px solid "+(s?s.c+"40":"#e4e9f0"),background:s?s.bg:"#fafafa",color:s?s.c:"#ccc",fontWeight:600,fontSize:11,cursor:"pointer",fontFamily:"inherit",lineHeight:1.2,minHeight:36}}>
                                   {s?s.l:"—"}
                                 </button>
@@ -2362,9 +2362,28 @@ function KshipApp() {
                       </tbody>
                     </table>);
                   })()}
+                  {schPicker&&(<div onClick={()=>setSchPicker(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:999}}>
+                    <div onClick={e=>e.stopPropagation()} style={{position:"fixed",left:Math.min(schPicker.x-90,window.innerWidth-190),top:Math.min(schPicker.y,window.innerHeight-220),width:180,background:"#fff",borderRadius:10,boxShadow:"0 4px 20px rgba(0,0,0,0.18)",border:"1px solid #dce3ed",zIndex:1000,overflow:"hidden"}}>
+                      <div style={{padding:"8px 12px",borderBottom:"1px solid #f0f2f5",fontSize:11,color:"#8a9ab0",fontWeight:600}}>選擇班別</div>
+                      <div style={{padding:"6px 8px"}}>
+                        {SHIFTS.map(sh=>(
+                          <button key={sh.k} onClick={()=>{setSchShift(schWeek,schPicker.empNo,schPicker.dayIdx,sh.k);setSchPicker(null);}} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"8px 10px",border:"none",background:"transparent",cursor:"pointer",borderRadius:6,fontFamily:"inherit",fontSize:13,fontWeight:600,color:sh.c,textAlign:"left"}} onMouseOver={e=>{e.currentTarget.style.background=sh.bg;}} onMouseOut={e=>{e.currentTarget.style.background="transparent";}}>
+                            <span style={{display:"inline-block",width:14,height:14,borderRadius:4,background:sh.bg,border:"2px solid "+sh.c+"80",flexShrink:0}}/>
+                            <span>{sh.l}</span>
+                            <span style={{fontSize:11,color:"#8a9ab0",fontWeight:400,marginLeft:"auto"}}>{sh.k!=="休"?sh.t:""}</span>
+                          </button>
+                        ))}
+                        <div style={{borderTop:"1px solid #f0f2f5",marginTop:4,paddingTop:4}}>
+                          <button onClick={()=>{setSchShift(schWeek,schPicker.empNo,schPicker.dayIdx,"");setSchPicker(null);}} style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"8px 10px",border:"none",background:"transparent",cursor:"pointer",borderRadius:6,fontFamily:"inherit",fontSize:13,color:"#c0504d"}} onMouseOver={e=>{e.currentTarget.style.background="#fde8e8";}} onMouseOut={e=>{e.currentTarget.style.background="transparent";}}>
+                            <span style={{fontSize:14}}>✕</span><span>清除</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>)}
                 </div>
                 <div style={{background:"#f5f8fc",borderRadius:8,padding:"10px 14px",border:"1px solid #e4e9f0"}}>
-                  <div style={{fontSize:12,color:"#8a9ab0",marginBottom:6,fontWeight:600}}>班別說明（點擊格子切換）</div>
+                  <div style={{fontSize:12,color:"#8a9ab0",marginBottom:6,fontWeight:600}}>班別說明</div>
                   <div style={{display:"flex",gap:10,flexWrap:"wrap",fontSize:12}}>
                     {SHIFTS.map(s=>(
                       <span key={s.k} style={{display:"flex",alignItems:"center",gap:4}}>
