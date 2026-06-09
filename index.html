@@ -142,6 +142,24 @@ function calcTax(amount) {
   return { incomeTax, localTax, total: incomeTax + localTax, net: amount - incomeTax - localTax };
 }
 
+// ═══ KST (韓國時區 UTC+9) 工具函式 ═══
+function getKSTTodayRange() {
+  var now = new Date();
+  var kstMs = now.getTime() + (9*60 + now.getTimezoneOffset()) * 60000;
+  var kst = new Date(kstMs);
+  var startMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000;
+  return { startMs: startMs, endMs: startMs + 86400000 };
+}
+function isInRange(ts, startMs, endMs) {
+  if(!ts) return false;
+  var t = new Date(ts).getTime();
+  return !isNaN(t) && t >= startMs && t < endMs;
+}
+function pkgInRange(p, startMs, endMs) {
+  return isInRange(p.scanned_at, startMs, endMs)
+      || (!p.scanned_at && isInRange(p.created_at, startMs, endMs));
+}
+
 // ═══ Shift / Attendance Constants ═══
 const SHIFTS = [
   { k:"A", l:"12-18", t:"12:00~18:00", h:6, c:"#34537d", bg:"#dce8f4" },
@@ -287,30 +305,25 @@ function KshipApp() {
   useEffect(() => {
     async function loadDailyStats() {
       try {
-        // 韓國時間今天起訖
-        var now = new Date();
-        var kstMs = now.getTime() + (9*60 + now.getTimezoneOffset()) * 60000;
-        var kst = new Date(kstMs);
-        var start = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000).toISOString();
-        var end = new Date(new Date(start).getTime() + 86400000).toISOString();
+        // 韓國時間今天起訖（用數值比較，避免字串格式差異）
+        var range = getKSTTodayRange();
 
         // 撈全部包裹 + 任務（select('*') 避免欄位不存在）
         var { data:allPkg } = await sb.from('packages').select('*');
         var inbound = (allPkg||[]).filter(function(p){
-          return (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
-              || (!p.scanned_at && p.created_at && p.created_at >= start && p.created_at < end);
+          return pkgInRange(p, range.startMs, range.endMs);
         }).length;
         var unclaimed = (allPkg||[]).filter(function(p){ return p.status === 'unclaimed'; }).length;
         var { data:allTasks } = await sb.from('tasks').select('*');
         var shipped = (allTasks||[]).filter(function(t){
           return (t.task_type==='ship'||t.type==='ship') && (t.status==='completed'||t.status==='paid')
-            && t.created_at && t.created_at >= start && t.created_at < end;
+            && isInRange(t.created_at, range.startMs, range.endMs);
         }).length;
         var pendingShip = (allTasks||[]).filter(function(t){
           return (t.task_type==='ship'||t.type==='ship') && t.status==='pending';
         }).length;
         setDailyStats({ inbound: inbound, shipped: shipped, pendingShip: pendingShip, unclaimed: unclaimed });
-        console.log('📊 管理端統計:', {inbound, shipped, pendingShip, unclaimed});
+        console.log('📊 管理端統計 (KST):', {inbound, shipped, pendingShip, unclaimed, rangeUTC: new Date(range.startMs).toISOString()+' ~ '+new Date(range.endMs).toISOString()});
       } catch(e) { console.error('loadDailyStats:', e); }
     }
     if(loggedIn) { loadDailyStats(); loadInboundDetail(); loadPerformance(); }
@@ -741,11 +754,12 @@ function KshipApp() {
       var todayStr = y+'-'+mo+'-'+da;
       var startISO = new Date(Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000).toISOString();
       var endISO = new Date(new Date(startISO).getTime() + 86400000).toISOString();
+      var rangeMs = getKSTTodayRange();
       var { data: todayTasks } = await sb.from('tasks').select('*');
       todayTasks = (todayTasks||[]).filter(function(t){
         return (t.task_type==='ship'||t.type==='ship')
           && (t.status==='completed'||t.status==='paid')
-          && t.created_at && t.created_at >= startISO && t.created_at < endISO;
+          && isInRange(t.created_at, rangeMs.startMs, rangeMs.endMs);
       });
       if(todayTasks.length === 0) { alert('今日無出貨紀錄可匯出'); return; }
       var { data: members } = await sb.from('members').select('member_code, name, phone, address, id_number');
@@ -837,13 +851,10 @@ function KshipApp() {
   async function loadInboundDetail() {
     if(!sb) return;
     try {
-      var now=new Date(),kstMs=now.getTime()+(9*60+now.getTimezoneOffset())*60000,kst=new Date(kstMs);
-      var start=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth(),kst.getUTCDate())-9*3600000).toISOString();
-      var end=new Date(new Date(start).getTime()+86400000).toISOString();
+      var range = getKSTTodayRange();
       var {data:allPkg}=await sb.from('packages').select('*');
       var data = (allPkg||[]).filter(function(p){
-        return (p.scanned_at && p.scanned_at >= start && p.scanned_at < end)
-            || (!p.scanned_at && p.created_at && p.created_at >= start && p.created_at < end);
+        return pkgInRange(p, range.startMs, range.endMs);
       }).sort(function(a,b){ return (b.scanned_at||b.created_at||'').localeCompare(a.scanned_at||a.created_at||''); });
       setInboundDetail(data||[]);
     } catch(e){ console.error('loadInboundDetail:',e); }
@@ -858,17 +869,12 @@ function KshipApp() {
     if(!sb) return;
     try {
       var { todayStr, monthStr } = getKSTDates();
-      var range = (function(){
-        var now=new Date(),kstMs=now.getTime()+(9*60+now.getTimezoneOffset())*60000,kst=new Date(kstMs);
-        var s=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth(),kst.getUTCDate())-9*3600000);
-        return {start:s.toISOString(),end:new Date(s.getTime()+86400000).toISOString()};
-      })();
+      var range = getKSTTodayRange();
 
       // 今日入庫 by 員工（優先 scanned_at，沒有才 fallback created_at）
       var {data:allPkgPerf} = await sb.from('packages').select('processed_by_name,created_at,scanned_at');
       var todayPkgs = (allPkgPerf||[]).filter(function(p){
-        return (p.scanned_at && p.scanned_at >= range.start && p.scanned_at < range.end)
-            || (!p.scanned_at && p.created_at && p.created_at >= range.start && p.created_at < range.end);
+        return pkgInRange(p, range.startMs, range.endMs);
       });
       todayPkgs = todayPkgs||[];
       var perfMap = {};
