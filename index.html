@@ -145,9 +145,8 @@ function calcTax(amount) {
 // ═══ KST (韓國時區 UTC+9) 工具函式 ═══
 function getKSTTodayRange() {
   var now = new Date();
-  var kstMs = now.getTime() + (9*60 + now.getTimezoneOffset()) * 60000;
-  var kst = new Date(kstMs);
-  var startMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9*3600000;
+  var kst = new Date(now.getTime() + 9 * 3600000);
+  var startMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()) - 9 * 3600000;
   return { startMs: startMs, endMs: startMs + 86400000 };
 }
 function isInRange(ts, startMs, endMs) {
@@ -329,7 +328,7 @@ function KshipApp() {
       setLastRefresh(String(k.getUTCHours()).padStart(2,'0')+':'+String(k.getUTCMinutes()).padStart(2,'0')+':'+String(k.getUTCSeconds()).padStart(2,'0'));
     } catch(e) { console.error('loadDailyStats:', e); }
   },[]);
-  function toKST(){var n=new Date(),ms=n.getTime()+(9*60+n.getTimezoneOffset())*60000;return new Date(ms)}
+  function toKST(){return new Date(new Date().getTime() + 9 * 3600000)}
   useEffect(() => {
     if(loggedIn) { refreshStats(); loadInboundDetail(); loadPerformance(); }
     if(loggedIn) { var iv = setInterval(function(){ refreshStats(); loadInboundDetail(); loadPerformance(); }, 15000); return ()=>clearInterval(iv); }
@@ -568,11 +567,9 @@ function KshipApp() {
 
   // ── 財務資料載入（KST）──
   function getKSTDates() {
-    var now = new Date();
-    var kstMs = now.getTime() + (9*60 + now.getTimezoneOffset()) * 60000;
-    var kst = new Date(kstMs);
-    var todayStr = kst.getFullYear()+'-'+String(kst.getMonth()+1).padStart(2,'0')+'-'+String(kst.getDate()).padStart(2,'0');
-    var monthStr = kst.getFullYear()+'-'+String(kst.getMonth()+1).padStart(2,'0');
+    var kst = new Date(new Date().getTime() + 9 * 3600000);
+    var todayStr = kst.getUTCFullYear()+'-'+String(kst.getUTCMonth()+1).padStart(2,'0')+'-'+String(kst.getUTCDate()).padStart(2,'0');
+    var monthStr = kst.getUTCFullYear()+'-'+String(kst.getUTCMonth()+1).padStart(2,'0');
     return { todayStr, monthStr };
   }
 
@@ -764,8 +761,7 @@ function KshipApp() {
     try {
       if(!sb) { alert('系統尚未準備好'); return; }
       var now = new Date();
-      var kstMs = now.getTime() + (9*60 + now.getTimezoneOffset()) * 60000;
-      var kst = new Date(kstMs);
+      var kst = new Date(now.getTime() + 9 * 3600000);
       var y = kst.getUTCFullYear();
       var mo = kst.getUTCMonth()+1; if(mo<10) mo='0'+mo;
       var da = kst.getUTCDate(); if(da<10) da='0'+da;
