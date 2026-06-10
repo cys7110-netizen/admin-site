@@ -176,6 +176,29 @@ function fmtDate(d){ return d.slice(0,4)+'/'+d.slice(5,7)+'/'+d.slice(8,10); }
 function weekLabel(mon){ var d=new Date(mon); var sun=new Date(d); sun.setDate(d.getDate()+6); return (d.getMonth()+1)+'/'+d.getDate()+' ~ '+(sun.getMonth()+1)+'/'+sun.getDate(); }
 function dayLabels(mon){ var arr=[]; for(var i=0;i<7;i++){ var d=new Date(mon); d.setDate(d.getDate()+i); var wd=["日","一","二","三","四","五","六"][d.getDay()]; arr.push({d:d.toISOString().slice(0,10),wd:wd,dd:(d.getMonth()+1)+'/'+ d.getDate()}); } return arr; }
 const ATT_STATUS = [{k:"出勤",c:"#5b9e6f"},{k:"請假",c:"#c4953a"},{k:"遲到",c:"#c0504d"},{k:"未到",c:"#8a9ab0"}];
+
+// ═══ 會員等級系統 ═══
+const GRADES = [
+  { k:'一般', kg:0, discount:0, downMonths:0, c:'#34537d', bg:'#e8edf4', icon:'' },
+  { k:'VIP', kg:100, discount:5, downMonths:2, c:'#c4953a', bg:'#f5ead4', icon:'⭐' },
+  { k:'VVIP', kg:300, discount:10, downMonths:3, c:'#b8860b', bg:'#f5ecd0', icon:'👑' },
+  { k:'SVIP', kg:500, discount:15, downMonths:3, c:'#7b2d8e', bg:'#f0e0f5', icon:'💎' },
+];
+const GRADE_KEYS = GRADES.map(g=>g.k);
+function getGradeInfo(k){ return GRADES.find(g=>g.k===k)||GRADES[0]; }
+function calcGrade(monthlyKg){
+  // monthlyKg[0]=上月, [1]=2個月前, ... 用總出貨重量
+  var lm=monthlyKg[0]||0;
+  // 升級：上月達標直接升
+  if(lm>=500)return'SVIP'; if(lm>=300)return'VVIP'; if(lm>=100)return'VIP';
+  // 降級保護：曾達標且未連續N月未達標
+  for(var g=3;g>=1;g--){var gi=GRADES[g];var earned=false;
+    for(var i=1;i<=5;i++)if((monthlyKg[i]||0)>=gi.kg){earned=true;break;}
+    if(earned){var below=0;for(var i=0;i<gi.downMonths&&i<monthlyKg.length;i++){if((monthlyKg[i]||0)<gi.kg)below++;else break;}
+    if(below<gi.downMonths)return gi.k;}
+  }
+  return'一般';
+}
 function calcWorkHours(clockIn, clockOut) {
   if(!clockIn||!clockOut) return 0;
   var p1=clockIn.split(':'),p2=clockOut.split(':');
@@ -183,6 +206,32 @@ function calcWorkHours(clockIn, clockOut) {
   var outM=parseInt(p2[0])*60+parseInt(p2[1]||0);
   if(outM<=inM) outM+=1440;
   return Math.round((outM-inM)/60*10)/10;
+}
+
+// ═══ 運費設定系統 ═══
+const DEFAULT_SHIP_RATES = {
+  transit: { label:'轉機', icon:'🔄', tiers:[
+    {min:0,max:5,price:280},{min:5,max:10,price:260},{min:10,max:20,price:240},{min:20,max:50,price:220},{min:50,max:9999,price:200}
+  ], minCharge:0, note:'一般 3~5 天到貨' },
+  direct: { label:'直飛', icon:'✈️', tiers:[
+    {min:0,max:5,price:350},{min:5,max:10,price:320},{min:10,max:20,price:300},{min:20,max:50,price:280},{min:50,max:9999,price:260}
+  ], minCharge:0, note:'最快 1~2 天到貨' },
+  sea: { label:'海運', icon:'🚢', tiers:[
+    {min:0,max:10,price:120},{min:10,max:30,price:100},{min:30,max:50,price:90},{min:50,max:9999,price:80}
+  ], minCharge:0, note:'約 7~14 天到貨、限一般貨物' }
+};
+// 試算運費（含 VIP 折扣）
+function calcShipCost(method, weightKg, grade, ratesOverride) {
+  var rates = ratesOverride || DEFAULT_SHIP_RATES;
+  var r = rates[method];
+  if(!r || !r.tiers || r.tiers.length===0) return {base:0,discount:0,final:0,tierLabel:''};
+  var tier = r.tiers.find(function(t){return weightKg>=t.min && weightKg<t.max;}) || r.tiers[r.tiers.length-1];
+  var base = Math.round(tier.price * weightKg);
+  if(r.minCharge && base < r.minCharge) base = r.minCharge;
+  var gi = getGradeInfo(grade||'一般');
+  var discountTotal = Math.round(gi.discount * weightKg);
+  var finalCost = Math.max(0, base - discountTotal);
+  return {base:base, discount:discountTotal, final:finalCost, tierPrice:tier.price, tierLabel:tier.min+'~'+(tier.max>=9999?'∞':tier.max)+'kg', gradeDiscount:gi.discount, method:r.label};
 }
 
 function useIsMobile() {
@@ -261,7 +310,7 @@ const NAV = [
   ]},
 ];
 
-const DONE_PAGES = ["hr-employees", "hr-salary", "hr-visa", "hr-attendance", "hr-schedule"];
+const DONE_PAGES = ["hr-employees", "hr-salary", "hr-visa", "hr-attendance", "hr-schedule", "hr-performance", "set-tier", "set-shipping", "cust-list", "cust-detail", "cust-vip", "cust-active", "cust-inactive", "cust-unpaid", "cust-ranking", "cust-analysis", "exp-meals", "exp-packing"];
 
 function Placeholder({ title }) {
   return (
@@ -357,10 +406,11 @@ function KshipApp() {
   const roleFilter = (items) => {
     if (userRole === "boss") return items;
     if (userRole === "manager") return items
-      .filter(n => n.k !== "finance" && n.k !== "settings" && n.k !== "mgr-expense")
+      .filter(n => n.k !== "settings" && n.k !== "mgr-expense")
       .map(n => {
         if(n.k === "dashboard") return { ...n, sub: n.sub ? n.sub.filter(s => s.k !== "dash-finance") : undefined };
         if(n.k === "hr") return { ...n, sub: n.sub ? n.sub.filter(s => STAFF_HR_PAGES.includes(s.k)) : undefined };
+        if(n.k === "finance") return { ...n, sub: n.sub ? n.sub.filter(s => s.k === "fin-shiplist") : undefined };
         return n;
       });
     if (userRole === "staff") return items
@@ -510,6 +560,8 @@ function KshipApp() {
           if(parsedSch && typeof parsedSch === 'object') { setSchData(parsedSch); console.log('📋 排班資料：已從 Supabase 載入'); }
         }
       } catch(e) { console.log('排班資料 Supabase 載入失敗，使用本地資料'); }
+      // 載入運費設定
+      loadShipRates();
     })();
   }, []);
   const handleAnnualDblClick = (rowIdx, field) => { setEditCell({row:rowIdx,field}); setEditVal2(String(annualData[rowIdx][field]||0)); };
@@ -564,6 +616,39 @@ function KshipApp() {
   const mealTotal = mealExpenses.reduce((s, e) => s + e.amount, 0);
   const packTotal = packingExpenses.reduce((s, e) => s + e.amount, 0);
   const allExpTotal = expTotal + mealTotal + packTotal;
+
+  // ── 運費設定（Supabase 連動）──
+  const [shipRates, setShipRates] = useState(DEFAULT_SHIP_RATES);
+  const shipRatesRef = useRef(DEFAULT_SHIP_RATES);
+  async function loadShipRates() {
+    try {
+      var {data} = await sb.from('finance_records').select('*').eq('type','shipping_rates').limit(1);
+      if(data && data.length>0 && data[0].description) {
+        var parsed = JSON.parse(data[0].description);
+        if(parsed && typeof parsed==='object' && (parsed.transit||parsed.direct||parsed.sea)) {
+          // merge with defaults to ensure all fields exist
+          var merged = {...DEFAULT_SHIP_RATES};
+          ['transit','direct','sea'].forEach(function(k){
+            if(parsed[k]) merged[k] = {...DEFAULT_SHIP_RATES[k], ...parsed[k]};
+          });
+          setShipRates(merged);
+          shipRatesRef.current = merged;
+          console.log('🚚 運費設定：已從 Supabase 載入');
+        }
+      }
+    } catch(e) { console.log('運費設定載入失敗，使用預設值'); }
+  }
+  async function saveShipRates(newRates) {
+    setShipRates(newRates);
+    shipRatesRef.current = newRates;
+    try {
+      await sb.from('finance_records').upsert({
+        type:'shipping_rates', record_type:'shipping_rates', amount:0,
+        description:JSON.stringify(newRates),
+        date:new Date().toISOString().slice(0,10)
+      },{ onConflict:'type' });
+    } catch(e) { console.error('運費設定儲存失敗:',e); }
+  }
 
   // ── 財務資料載入（KST）──
   function getKSTDates() {
@@ -714,10 +799,16 @@ function KshipApp() {
     } catch(e) { alert('操作失敗'); }
   }
 
-  // ── 匯出出貨/付款 Excel ──
-  function exportShipExcel() {
+  // ── 匯出出貨/付款 Excel（含收件資料）──
+  async function exportShipExcel() {
     if(!fin.shipList || fin.shipList.length === 0) { alert('沒有資料可匯出'); return; }
+    var memberMap = {};
+    try {
+      var { data: members } = await sb.from('members').select('member_code, name, phone, address, id_number');
+      (members||[]).forEach(function(m){ memberMap[m.member_code] = m; });
+    } catch(e){}
     var rows = fin.shipList.map(function(r) {
+      var m = memberMap[r.memberCode] || {};
       var payMethod = '';
       var payDetail = '';
       if(r.paid) {
@@ -736,9 +827,13 @@ function KshipApp() {
       return {
         '出貨日期': r.date,
         '客戶代號': r.memberCode,
+        '姓名': m.name || '',
+        '電話': m.phone || '',
+        '地址': m.address || '',
+        '身分證字號': m.id_number || '',
         '重量(kg)': r.weight || '',
-        '運費': r.cost,
         '報關行': r.logistic || '',
+        '運費': r.cost,
         '收款狀態': r.paid ? '已收款' : '未收款',
         '付款方式': payMethod,
         '付款細節': payDetail,
@@ -746,10 +841,7 @@ function KshipApp() {
       };
     });
     var ws = XLSX.utils.json_to_sheet(rows);
-    var colWidths = [
-      {wch:12},{wch:12},{wch:10},{wch:12},{wch:12},{wch:10},{wch:12},{wch:16},{wch:12}
-    ];
-    ws['!cols'] = colWidths;
+    ws['!cols'] = [{wch:12},{wch:12},{wch:10},{wch:14},{wch:30},{wch:14},{wch:10},{wch:10},{wch:12},{wch:10},{wch:12},{wch:16},{wch:12}];
     var wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, '出貨付款清單');
     var today = new Date().toISOString().substring(0,10);
@@ -806,8 +898,8 @@ function KshipApp() {
       var ws = XLSX.utils.json_to_sheet(rows);
       ws['!cols'] = [{wch:10},{wch:12},{wch:10},{wch:14},{wch:30},{wch:14},{wch:10},{wch:12},{wch:10},{wch:14},{wch:16}];
       var wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, '今日報關');
-      XLSX.writeFile(wb, '韓集報關_' + todayStr + '.xlsx');
+      XLSX.utils.book_append_sheet(wb, ws, '今日出貨');
+      XLSX.writeFile(wb, '韓集今日出貨_' + todayStr + '.xlsx');
       alert('匯出成功！共 ' + rows.length + ' 筆');
     } catch(e) { alert('\u532f\u51fa\u5931\u6557：' + e.message); }
   }
@@ -836,6 +928,75 @@ function KshipApp() {
   const [selectedCust, setSelectedCust] = useState(null);
   const [custShipRecords, setCustShipRecords] = useState([]);
   const [custUnpaidRecords, setCustUnpaidRecords] = useState([]);
+
+  // ── 手動等級覆蓋系統 ──
+  const [manualGrades, setManualGrades] = useState({});
+  const manualGradesRef = useRef({});
+
+  // 載入手動等級覆蓋
+  async function loadManualGrades() {
+    try {
+      var {data} = await sb.from('finance_records').select('*').eq('type','manual_grade_overrides').limit(1);
+      if(data && data.length>0 && data[0].description) {
+        var parsed = JSON.parse(data[0].description);
+        if(parsed && typeof parsed==='object') {
+          setManualGrades(parsed);
+          manualGradesRef.current = parsed;
+          console.log('🏷️ 手動等級覆蓋：已載入', Object.keys(parsed).length, '筆');
+        }
+      }
+    } catch(e) { console.log('手動等級載入失敗'); }
+  }
+
+  // 儲存手動等級覆蓋到 Supabase
+  async function saveManualGrades(newData) {
+    setManualGrades(newData);
+    manualGradesRef.current = newData;
+    try {
+      await sb.from('finance_records').upsert({
+        type:'manual_grade_overrides',
+        record_type:'manual_grade_overrides',
+        amount:0,
+        description:JSON.stringify(newData),
+        date:new Date().toISOString().slice(0,10)
+      },{ onConflict:'type' });
+    } catch(e) { console.error('手動等級儲存失敗:',e); }
+  }
+
+  // 設定某會員的手動等級
+  async function setManualGrade(memberCode, grade, note) {
+    var nd = {...manualGradesRef.current};
+    nd[memberCode] = {
+      grade: grade,
+      setBy: userRole==='boss'?'管理者':userRole==='manager'?'主管':'員工',
+      setAt: new Date().toISOString().slice(0,16).replace('T',' '),
+      note: note||''
+    };
+    await saveManualGrades(nd);
+    await loadCustomers();
+    // 更新 selectedCust
+    if(selectedCust && selectedCust.code===memberCode) {
+      var gi = getGradeInfo(grade);
+      setSelectedCust(function(prev){return prev?{...prev,grade:grade,gradeInfo:gi,discount:gi.discount,isManual:true,manualInfo:nd[memberCode]}:prev;});
+    }
+  }
+
+  // 清除某會員的手動等級（恢復自動計算）
+  async function clearManualGrade(memberCode) {
+    var nd = {...manualGradesRef.current};
+    delete nd[memberCode];
+    await saveManualGrades(nd);
+    await loadCustomers();
+    if(selectedCust && selectedCust.code===memberCode) {
+      setSelectedCust(function(prev){
+        if(!prev) return prev;
+        var spend = prev.monthlyKg||[0,0,0,0,0,0];
+        var autoGrade = calcGrade(spend);
+        var gi = getGradeInfo(autoGrade);
+        return {...prev, grade:autoGrade, gradeInfo:gi, discount:gi.discount, isManual:false, manualInfo:null};
+      });
+    }
+  }
 
   async function selectCustomer(cust) {
     setSelectedCust(cust);
@@ -875,7 +1036,7 @@ function KshipApp() {
   }
   const filteredCust = custList.filter(c => {
     var matchSearch = !custSearch || c.name.includes(custSearch) || c.code.includes(custSearch.toUpperCase()) || (c.phone||"").includes(custSearch);
-    var matchFilter = custFilter==="全部" || c.grade===custFilter;
+    var matchFilter = custFilter==="全部" || (custFilter==="手動" ? c.isManual : c.grade===custFilter);
     return matchSearch && matchFilter;
   });
 
@@ -885,27 +1046,36 @@ function KshipApp() {
       var { todayStr, monthStr } = getKSTDates();
       var range = getKSTTodayRange();
 
-      // 今日入庫 by 員工（優先 scanned_at，沒有才 fallback created_at）
+      // KST 本月範圍（精確 KST 0:00 起訖）
+      var kst = new Date(new Date().getTime() + 9 * 3600000);
+      var monthStartMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), 1) - 9 * 3600000;
+      var monthEndMs = Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth() + 1, 1) - 9 * 3600000;
+      var monthStartISO = new Date(monthStartMs).toISOString();
+      var monthEndISO = new Date(monthEndMs).toISOString();
+
+      // 抓全部包裹（一次查詢，分別算今日 / 本月）
       var {data:allPkgPerf} = await sb.from('packages').select('processed_by_name,created_at,scanned_at');
-      var todayPkgs = (allPkgPerf||[]).filter(function(p){
-        return pkgInRange(p, range.startMs, range.endMs);
-      });
-      todayPkgs = todayPkgs||[];
+      allPkgPerf = allPkgPerf||[];
+
       var perfMap = {};
-      todayPkgs.forEach(function(p){
+
+      // 今日入庫（KST 今日範圍，scanned_at 優先）
+      allPkgPerf.forEach(function(p){
+        if(!pkgInRange(p, range.startMs, range.endMs)) return;
         var n = p.processed_by_name||'未知';
-        if(!perfMap[n]) perfMap[n]={name:n,today:0};
+        if(!perfMap[n]) perfMap[n]={name:n,today:0,month:0};
         perfMap[n].today++;
       });
 
-      // 本月入庫 by 員工
-      var monthStart = monthStr+'-01T00:00:00Z';
-      var {data:monthPkgs} = await sb.from('packages').select('processed_by_name')
-        .gte('created_at',monthStart);
-      (monthPkgs||[]).forEach(function(p){
+      // 本月入庫（KST 本月範圍，scanned_at 優先 > created_at）
+      allPkgPerf.forEach(function(p){
+        var ts = p.scanned_at || p.created_at;
+        if(!ts) return;
+        var t = new Date(ts).getTime();
+        if(isNaN(t) || t < monthStartMs || t >= monthEndMs) return;
         var n = p.processed_by_name||'未知';
-        if(!perfMap[n]) perfMap[n]={name:n,today:0};
-        perfMap[n].month = (perfMap[n].month||0)+1;
+        if(!perfMap[n]) perfMap[n]={name:n,today:0,month:0};
+        perfMap[n].month++;
       });
 
       var perfList = Object.values(perfMap).sort(function(a,b){return (b.month||0)-(a.month||0);});
@@ -945,37 +1115,48 @@ function KshipApp() {
       var {data:allTasks} = await sb.from('tasks').select('*');
       var shipTasks = (allTasks||[]).filter(function(t){ return (t.task_type==='ship'||t.type==='ship') && (t.status==='completed'||t.status==='paid'); });
       var spendMap = {};
-      var now = new Date();
-      var monthStr = now.getFullYear()+'-'+(now.getMonth()+1<10?'0':'')+(now.getMonth()+1);
-      var lastMonth = new Date(now.getFullYear(), now.getMonth()-1, 1);
-      var lastMonthStr = lastMonth.getFullYear()+'-'+(lastMonth.getMonth()+1<10?'0':'')+(lastMonth.getMonth()+1);
+      var kst = new Date(new Date().getTime() + 9 * 3600000);
+      var monthStr = kst.getUTCFullYear()+'-'+String(kst.getUTCMonth()+1).padStart(2,'0');
+      // 計算最近6個月的月份字串
+      var monthStrs = [];
+      for(var mi=0;mi<6;mi++){
+        var md=new Date(Date.UTC(kst.getUTCFullYear(),kst.getUTCMonth()-1-mi,1));
+        monthStrs.push(md.getUTCFullYear()+'-'+String(md.getUTCMonth()+1).padStart(2,'0'));
+      }
 
       shipTasks.forEach(function(t){
         var mc = t.member_code||'';
-        if(!spendMap[mc]) spendMap[mc]={total:0,month:0,count:0,lastMonthAirKg:0,thisMonthAirKg:0};
+        if(!spendMap[mc]) spendMap[mc]={total:0,month:0,count:0,thisMonthKg:0,monthlyKg:[0,0,0,0,0,0]};
         spendMap[mc].total += (t.ship_cost||0);
         spendMap[mc].count++;
-        if((t.created_at||'').substring(0,7)===monthStr) spendMap[mc].month += (t.ship_cost||0);
-        // 空運重量統計（用於等級判定）
-        var isAir = (t.details||'').indexOf('空運') >= 0;
-        if(isAir && t.ship_weight) {
-          if((t.created_at||'').substring(0,7)===lastMonthStr) spendMap[mc].lastMonthAirKg += t.ship_weight;
-          if((t.created_at||'').substring(0,7)===monthStr) spendMap[mc].thisMonthAirKg += t.ship_weight;
+        var tMonth=(t.created_at||'').substring(0,7);
+        if(tMonth===monthStr) { spendMap[mc].month += (t.ship_cost||0); spendMap[mc].thisMonthKg += (t.ship_weight||0); }
+        // 統計最近6個月出貨重量
+        for(var mi=0;mi<6;mi++){
+          if(tMonth===monthStrs[mi]) { spendMap[mc].monthlyKg[mi] += (t.ship_weight||0); break; }
         }
       });
 
       var list = allMembers.map(function(m){
         var stats = pkgMap[m.member_code]||{count:0,lastDate:''};
-        var spend = spendMap[m.member_code]||{total:0,month:0,count:0,lastMonthAirKg:0,thisMonthAirKg:0};
+        var spend = spendMap[m.member_code]||{total:0,month:0,count:0,thisMonthKg:0,monthlyKg:[0,0,0,0,0,0]};
         var lastD = stats.lastDate ? new Date(stats.lastDate).toLocaleDateString('zh-TW',{month:'2-digit',day:'2-digit'}) : '—';
-        // 等級判定：上月空運重量 ≥300kg=VVIP, ≥100kg=VIP, 否則一般
-        var grade = spend.lastMonthAirKg >= 300 ? 'VVIP' : (spend.lastMonthAirKg >= 100 ? 'VIP' : '一般');
+        var autoGrade = calcGrade(spend.monthlyKg);
+        // 手動等級覆蓋優先
+        var mg = manualGradesRef.current[m.member_code];
+        var grade = (mg && mg.grade && GRADE_KEYS.includes(mg.grade)) ? mg.grade : autoGrade;
+        var isManual = !!(mg && mg.grade && GRADE_KEYS.includes(mg.grade));
+        var gi = getGradeInfo(grade);
         return {
           id:m.id, code:m.member_code, name:m.name||m.member_code,
           phone:m.phone||'', email:m.email||'', line_id:m.line_id||'', address:m.address||'', note:m.note||'',
           pkgCount:stats.count, lastDate:lastD,
           totalSpend: spend.total, monthSpend: spend.month, shipCount: spend.count,
-          grade: grade, lastMonthAirKg: spend.lastMonthAirKg, thisMonthAirKg: spend.thisMonthAirKg,
+          grade: grade, gradeInfo: gi, autoGrade: autoGrade,
+          isManual: isManual, manualInfo: isManual?mg:null,
+          lastMonthKg: spend.monthlyKg[0], thisMonthKg: spend.thisMonthKg,
+          monthlyKg: spend.monthlyKg,
+          discount: gi.discount,
           created_at: m.created_at||''
         };
       }).sort(function(a,b){return b.totalSpend-a.totalSpend;});
@@ -983,14 +1164,14 @@ function KshipApp() {
       setCustStats({
         total: list.length,
         active: list.filter(function(c){return c.pkgCount>0;}).length,
-        vip: list.filter(function(c){return c.grade==='VIP'||c.grade==='VVIP';}).length
+        vip: list.filter(function(c){return c.grade!=='一般';}).length
       });
       console.log('👥 客戶載入:', list.length, '位');
     } catch(e){ console.error('loadCustomers error:', e); }
   }
 
   useEffect(function(){
-    if(loggedIn) { loadPerformance(); loadCustomers(); }
+    if(loggedIn) { loadManualGrades().then(function(){ loadPerformance(); loadCustomers(); }); }
   }, [loggedIn]);
 
   // ── Employee CRUD ──
@@ -1615,7 +1796,7 @@ function KshipApp() {
                   <div style={{padding:"14px 16px",borderBottom:"1px solid #dce3ed",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
                     <h3 style={{fontSize:14,fontWeight:600,margin:0,color:"#34537d"}}>出貨 / 付款清單（一年內）</h3>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                      <button onClick={exportDailyCustoms} style={{background:"#c4953a",color:"#fff",border:"none",fontSize:12,padding:"6px 14px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>📋 今日報關</button>
+                      <button onClick={exportDailyCustoms} style={{background:"#c4953a",color:"#fff",border:"none",fontSize:12,padding:"6px 14px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>📋 今日出貨</button>
                       <button onClick={exportShipExcel} style={{background:"#5b9e6f",color:"#fff",border:"none",fontSize:12,padding:"6px 14px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>📥 全部匯出</button>
                       <span style={{fontSize:11,color:"#8a9ab0"}}>共 {fin.shipList.length} 筆</span>
                     </div>
@@ -1970,8 +2151,8 @@ function KshipApp() {
             {/* ═══ 客戶列表 ═══ */}
             {tab === "cust-list" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
-                  {[{l:"總會員數",v:custStats.total,c:"#34537d"},{l:"活躍會員",v:custStats.active,c:"#5b9e6f"},{l:"VIP",v:custList.filter(c=>c.grade==="VIP").length,c:"#c4953a"},{l:"VVIP",v:custList.filter(c=>c.grade==="VVIP").length,c:"#b8860b"}].map((s,i)=>(
+                <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+                  {[{l:"總會員數",v:custStats.total,c:"#34537d"},{l:"活躍會員",v:custStats.active,c:"#5b9e6f"},{l:"VIP",v:custList.filter(c=>c.grade==="VIP").length,c:"#c4953a"},{l:"VVIP",v:custList.filter(c=>c.grade==="VVIP").length,c:"#b8860b"},{l:"SVIP",v:custList.filter(c=>c.grade==="SVIP").length,c:"#7b2d8e"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:"10px 6px",border:"1px solid #dce3ed",textAlign:"center"}}>
                       <div style={{fontSize:11,color:"#8a9ab0",marginBottom:2}}>{s.l}</div>
                       <div style={{fontSize:20,fontWeight:700,color:s.c}}>{s.v}</div>
@@ -1984,8 +2165,8 @@ function KshipApp() {
                   <button onClick={()=>setCustSearch("")} style={{...btnP,background:"#8a9ab0",color:"#fff",fontSize:12}}>清除</button>
                 </div>
                 <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-                  {["全部","VVIP","VIP","一般"].map(f=>(
-                    <button key={f} onClick={()=>setCustFilter(f)} style={{padding:"6px 16px",borderRadius:20,border:custFilter===f?"2px solid #34537d":"1px solid #dce3ed",background:custFilter===f?"#34537d":"#fff",color:custFilter===f?"#fff":"#4a5568",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{f}</button>
+                  {["全部","SVIP","VVIP","VIP","一般","手動"].map(f=>(
+                    <button key={f} onClick={()=>setCustFilter(f)} style={{padding:"6px 16px",borderRadius:20,border:custFilter===f?"2px solid "+(f==="手動"?"#c4953a":"#34537d"):"1px solid #dce3ed",background:custFilter===f?(f==="手動"?"#c4953a":"#34537d"):"#fff",color:custFilter===f?"#fff":"#4a5568",fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{f}</button>
                   ))}
                 </div>
                 <div style={{overflowX:"auto"}}>
@@ -1996,7 +2177,7 @@ function KshipApp() {
                       filteredCust.slice(0,30).map((r,i)=>(
                         <tr key={i} style={{borderBottom:"1px solid #f0f2f5",cursor:"pointer"}} onClick={()=>selectCustomer(r)}>
                           <td style={{padding:8,color:"#8a9ab0"}}>{r.code}</td><td style={{padding:8,fontWeight:600}}>{r.name}</td><td style={{padding:8,fontSize:12,color:"#8a9ab0"}}>{r.phone}</td>
-                          <td style={{padding:8}}><span style={{fontSize:11,fontWeight:600,color:r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"),background:(r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"))+"15",padding:"2px 8px",borderRadius:4}}>{r.grade==="VVIP"?"👑 ":""}{r.grade==="VIP"?"⭐ ":""}{r.grade}</span></td>
+                          <td style={{padding:8}}>{(()=>{var gi=getGradeInfo(r.grade);return <span style={{display:"inline-flex",alignItems:"center",gap:3}}><span style={{fontSize:11,fontWeight:600,color:gi.c,background:gi.bg,padding:"2px 8px",borderRadius:4}}>{gi.icon}{gi.icon?' ':''}{r.grade}</span>{r.isManual&&<span style={{fontSize:9,fontWeight:600,color:"#fff",background:"#c4953a",padding:"1px 4px",borderRadius:3}}>手動</span>}</span>})()}</td>
                           <td style={{padding:8,fontWeight:600}}>{r.pkgCount} 件</td><td style={{padding:8,color:"#8a9ab0"}}>{r.lastDate}</td></tr>))}
                     </tbody>
                   </table>
@@ -2012,14 +2193,92 @@ function KshipApp() {
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8,marginBottom:14}}>
                     <div><div style={{fontSize:18,fontWeight:700}}>{selectedCust.name}</div><div style={{fontSize:12,color:"#8a9ab0"}}>{selectedCust.code}</div></div>
-                    {(selectedCust.grade==='VIP'||selectedCust.grade==='VVIP') && <span style={{fontSize:12,fontWeight:600,color:selectedCust.grade==='VVIP'?"#b8860b":"#c4953a",background:(selectedCust.grade==='VVIP'?"#b8860b":"#c4953a")+"15",padding:"4px 12px",borderRadius:6}}>{selectedCust.grade==='VVIP'?'👑 VVIP':'⭐ VIP'}</span>}
-                    {selectedCust.grade!=='VIP' && selectedCust.grade!=='VVIP' && <span style={{fontSize:12,fontWeight:600,color:"#34537d",background:"#e8edf4",padding:"4px 12px",borderRadius:6}}>{selectedCust.grade}</span>}
+                    <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                      {(()=>{var gi=getGradeInfo(selectedCust.grade);return <span style={{fontSize:12,fontWeight:600,color:gi.c,background:gi.bg,padding:"4px 12px",borderRadius:6}}>{gi.icon}{gi.icon?' ':''}{selectedCust.grade}{gi.discount>0?' (NT$'+gi.discount+'/kg折扣)':''}</span>})()}
+                      {selectedCust.isManual && <span style={{fontSize:10,fontWeight:600,color:"#fff",background:"#c4953a",padding:"3px 8px",borderRadius:4}}>手動</span>}
+                    </div>
+                    <div style={{fontSize:12,color:"#8a9ab0",marginTop:4,width:"100%"}}>
+                      上月出貨 {selectedCust.lastMonthKg||0}kg · 本月 {selectedCust.thisMonthKg||0}kg
+                      {selectedCust.isManual && selectedCust.autoGrade && <span style={{marginLeft:8,color:"#c4953a"}}>（自動判定：{selectedCust.autoGrade}）</span>}
+                    </div>
                   </div>
                   <div style={{fontSize:13,lineHeight:2}}>
                     {[{l:"電話",v:selectedCust.phone||'—'},{l:"LINE ID",v:selectedCust.line_id||'—'},{l:"地址",v:selectedCust.address||'—'},{l:"備註",v:selectedCust.note||'—'}].map((r,i)=>(
                       <div key={i} style={{display:"flex",gap:12}}><span style={{color:"#8a9ab0",minWidth:55}}>{r.l}</span><span>{r.v}</span></div>))}
                   </div>
                 </div>
+
+                {/* ── 手動調整等級 ── */}
+                {(userRole==='boss'||userRole==='manager') && (
+                <div style={{background:"#fff",borderRadius:8,padding:16,border:"2px solid #c4953a40"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12,flexWrap:"wrap",gap:6}}>
+                    <h3 style={{fontSize:14,fontWeight:700,margin:0,color:"#c4953a"}}>🔧 手動調整等級</h3>
+                    {selectedCust.isManual && selectedCust.manualInfo && (
+                      <div style={{fontSize:11,color:"#8a9ab0"}}>
+                        由 {selectedCust.manualInfo.setBy} 於 {selectedCust.manualInfo.setAt} 設定
+                        {selectedCust.manualInfo.note && <span> · {selectedCust.manualInfo.note}</span>}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"flex-end",flexWrap:"wrap"}}>
+                    <div style={{display:"flex",flexDirection:"column",gap:4,flex:"0 0 auto"}}>
+                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>目標等級</span>
+                      <select id="manual-grade-select" defaultValue={selectedCust.grade} style={{padding:"9px 12px",border:"1.5px solid #c4953a80",borderRadius:6,fontSize:14,fontWeight:600,fontFamily:"inherit",background:"#fff",color:"#1e2a3a",minWidth:130,outline:"none"}}>
+                        {GRADES.map(function(g,gi){return <option key={gi} value={g.k}>{g.icon}{g.icon?' ':''}{g.k}{gi>0?' (≥'+g.kg+'kg · 折NT$'+g.discount+'/kg)':' (無折扣)'}</option>;})}
+                      </select>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:4,flex:"1 1 120px",minWidth:120}}>
+                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>備註（選填）</span>
+                      <input id="manual-grade-note" placeholder="例：老客戶優惠" defaultValue={selectedCust.manualInfo?.note||''} style={{padding:"9px 12px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:13,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                    </div>
+                    <button onClick={function(){
+                      var grade=document.getElementById('manual-grade-select').value;
+                      var note=document.getElementById('manual-grade-note').value;
+                      if(!confirm('確定手動將 '+selectedCust.name+' 設為 '+grade+' 嗎？\n\n此操作將覆蓋自動計算的等級。')) return;
+                      setManualGrade(selectedCust.code, grade, note);
+                    }} style={{padding:"9px 18px",background:"#c4953a",color:"#fff",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:13,whiteSpace:"nowrap"}}>
+                      ✅ 套用等級
+                    </button>
+                    {selectedCust.isManual && (
+                      <button onClick={function(){
+                        if(!confirm('確定恢復 '+selectedCust.name+' 為自動計算等級嗎？\n\n系統將根據出貨公斤數重新判定等級。')) return;
+                        clearManualGrade(selectedCust.code);
+                      }} style={{padding:"9px 18px",background:"#e4e9f0",color:"#c0504d",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:13,whiteSpace:"nowrap"}}>
+                        ↩ 恢復自動
+                      </button>
+                    )}
+                  </div>
+                  {/* 等級差異提示 */}
+                  {selectedCust.isManual && selectedCust.autoGrade!==selectedCust.grade && (
+                    <div style={{marginTop:10,background:"#fdf5e6",borderRadius:6,padding:"8px 12px",fontSize:12,color:"#8b6914",display:"flex",alignItems:"center",gap:6}}>
+                      <span>⚠️</span>
+                      <span>自動判定為 <b>{selectedCust.autoGrade}</b>，目前手動設為 <b>{selectedCust.grade}</b>
+                      {getGradeInfo(selectedCust.grade).discount > getGradeInfo(selectedCust.autoGrade).discount ? '（折扣較高）':''}
+                      </span>
+                    </div>
+                  )}
+                  {/* 各等級快速按鈕 */}
+                  <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap"}}>
+                    {GRADES.map(function(g,gi){
+                      var isActive = selectedCust.grade===g.k;
+                      return (
+                        <button key={gi} onClick={function(){
+                          document.getElementById('manual-grade-select').value=g.k;
+                        }} style={{
+                          padding:"6px 14px",borderRadius:20,
+                          border:isActive?"2px solid "+g.c:"1px solid #dce3ed",
+                          background:isActive?g.bg:"#fff",
+                          color:isActive?g.c:"#8a9ab0",
+                          fontSize:12,fontWeight:isActive?700:500,cursor:"pointer",fontFamily:"inherit"
+                        }}>
+                          {g.icon||'👤'} {g.k}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                )}
+
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4, 1fr)",gap:10}}>
                   {[{l:"累計消費",v:w(selectedCust.totalSpend||0),c:"#34537d"},{l:"本月消費",v:w(selectedCust.monthSpend||0),c:"#34537d"},{l:"平均月消費",v:w(selectedCust.shipCount>0?Math.round(selectedCust.totalSpend/Math.max(1,selectedCust.shipCount)):0),c:"#5b9e6f"},{l:"出貨次數",v:(selectedCust.shipCount||0)+" 次",c:"#7b6ba5"}].map((s,i)=>(
                     <div key={i} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:16,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
@@ -2046,20 +2305,26 @@ function KshipApp() {
             {tab === "cust-vip" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
-                  <div><div style={{fontSize:11,color:"#8a9ab0"}}>VIP 客戶數</div><div style={{fontSize:24,fontWeight:700,color:"#c4953a"}}>{custStats.vip} 位</div></div>
-                  <div style={{background:"#f5f8fc",padding:"8px 14px",borderRadius:6,fontSize:12,color:"#8a9ab0",lineHeight:1.8}}>VIP：上月空運 ≥ 100kg（折抵 ₩5/kg）<br/>VVIP：上月空運 ≥ 300kg（折抵 ₩10/kg）</div>
+                  <div><div style={{fontSize:11,color:"#8a9ab0"}}>VIP+ 客戶數</div><div style={{fontSize:24,fontWeight:700,color:"#c4953a"}}>{custStats.vip} 位</div></div>
+                  <div style={{background:"#f5f8fc",padding:"8px 14px",borderRadius:6,fontSize:12,color:"#8a9ab0",lineHeight:1.8}}>
+                    ⭐ VIP：上月出貨 ≥ 100kg（折 NT$5/kg）· 連續2月未達降級<br/>
+                    👑 VVIP：上月出貨 ≥ 300kg（折 NT$10/kg）· 連續3月未達降級<br/>
+                    💎 SVIP：上月出貨 ≥ 500kg（折 NT$15/kg）· 連續3月未達降級
+                  </div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr",gap:10}}>
-                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP/VVIP 本月消費</div><div style={{fontSize:18,fontWeight:700,color:"#34537d"}}>{w(custList.filter(function(c){return c.grade==='VIP'||c.grade==='VVIP';}).reduce(function(s,c){return s+c.monthSpend;},0))}</div></div>
-                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP/VVIP 佔營收</div><div style={{fontSize:18,fontWeight:700,color:"#5b9e6f"}}>{custList.reduce(function(s,c){return s+c.totalSpend;},0)>0?Math.round(custList.filter(function(c){return c.grade==='VIP'||c.grade==='VVIP';}).reduce(function(s,c){return s+c.totalSpend;},0)/custList.reduce(function(s,c){return s+c.totalSpend;},0)*100):0}%</div></div>
+                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP+ 本月消費</div><div style={{fontSize:18,fontWeight:700,color:"#34537d"}}>{w(custList.filter(function(c){return c.grade!=='一般';}).reduce(function(s,c){return s+c.monthSpend;},0))}</div></div>
+                  <div style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #dce3ed",textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>VIP+ 佔營收</div><div style={{fontSize:18,fontWeight:700,color:"#5b9e6f"}}>{custList.reduce(function(s,c){return s+c.totalSpend;},0)>0?Math.round(custList.filter(function(c){return c.grade!=='一般';}).reduce(function(s,c){return s+c.totalSpend;},0)/custList.reduce(function(s,c){return s+c.totalSpend;},0)*100):0}%</div></div>
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  {custList.slice(0,5).map((r,i)=>(
-                    <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<4?"1px solid #f0f2f5":"none",fontSize:13}}>
+                  {custList.filter(function(c){return c.grade!=='一般';}).length===0
+                    ? <div style={{textAlign:"center",color:"#8a9ab0",padding:16}}>目前沒有 VIP+ 客戶</div>
+                    : custList.filter(function(c){return c.grade!=='一般';}).slice(0,10).map((r,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<Math.min(custList.filter(function(c){return c.grade!=='一般';}).length,10)-1?"1px solid #f0f2f5":"none",fontSize:13}}>
                       <span style={{minWidth:22,fontWeight:700,color:i===0?"#c4953a":i===1?"#8a9ab0":i===2?"#b85c5c":"#34537d"}}>{i+1}</span>
                       <span style={{flex:1,fontWeight:500}}>{r.name}</span>
-                      <span style={{fontSize:11,color:r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"),background:(r.grade==="VVIP"?"#b8860b":(r.grade==="VIP"?"#c4953a":"#34537d"))+"15",padding:"2px 8px",borderRadius:4,fontWeight:600}}>{r.grade==="VVIP"?"👑 ":""}{r.grade==="VIP"?"⭐ ":""}{r.grade}</span>
-                      <span style={{fontWeight:700,color:"#34537d"}}>{r.pkgCount} 件</span>
+                      {(function(){var gi=getGradeInfo(r.grade);return <span style={{fontSize:11,color:gi.c,background:gi.bg,padding:"2px 8px",borderRadius:4,fontWeight:600}}>{gi.icon}{gi.icon?' ':''}{r.grade}</span>;})()}
+                      <span style={{fontWeight:700,color:"#34537d"}}>{r.thisMonthKg||0} kg</span>
                       <span style={{fontSize:11,color:r.pkgCount>0?"#5b9e6f":"#c4953a"}}>{r.pkgCount>0?"活躍":"沉睡"}</span>
                     </div>))}
                 </div>
@@ -2075,10 +2340,10 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{fontSize:12,color:"#8a9ab0",marginBottom:12}}>活躍定義：最近30天內有出貨紀錄</div>
-                  {custList.slice(0,5).map(function(c){return{n:c.name,g:c.grade,d:c.lastDate,m:c.pkgCount};}).map((r,i)=>(
-                    <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<4?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
+                  {custList.filter(function(c){return c.pkgCount>0;}).slice(0,8).map(function(c){var gi=getGradeInfo(c.grade);return{n:c.name,g:c.grade,gi:gi,d:c.lastDate,m:c.monthSpend};}).map((r,i)=>(
+                    <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<7?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                       <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.n}</span>
-                      <span style={{fontSize:11,color:r.g==="VIP"?"#c4953a":"#34537d",background:r.g==="VIP"?"#c4953a15":"#e8edf4",padding:"2px 8px",borderRadius:4}}>{r.g}</span>
+                      <span style={{fontSize:11,color:r.gi.c,background:r.gi.bg,padding:"2px 8px",borderRadius:4,fontWeight:600}}>{r.gi.icon}{r.gi.icon?' ':''}{r.g}</span>
                       <span style={{fontSize:12,color:"#8a9ab0"}}>最近 {r.d}</span>
                       <span style={{fontWeight:600}}>本月 {w(r.m)}</span></div>))}
                 </div>
@@ -2094,11 +2359,11 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{fontSize:12,color:"#8a9ab0",marginBottom:12}}>沉睡定義：超過30天未出貨</div>
-                  {custList.filter(function(c){return c.pkgCount===0;}).slice(0,5).map(function(c){return{n:c.name,g:c.grade,d:c.lastDate,days:0,t:0,c:"#c4953a"};}).map((r,i)=>(
+                  {custList.filter(function(c){return c.pkgCount===0;}).slice(0,5).map(function(c){var gi=getGradeInfo(c.grade);return{n:c.name,g:c.grade,gi:gi,d:c.lastDate,days:0,t:c.totalSpend,c:"#c4953a"};}).map((r,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<3?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                       <span style={{width:8,height:8,borderRadius:"50%",background:r.c,flexShrink:0}}/>
                       <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.n}</span>
-                      <span style={{fontSize:11,color:r.g==="VIP"?"#c4953a":"#34537d",background:r.g==="VIP"?"#c4953a15":"#e8edf4",padding:"2px 8px",borderRadius:4}}>{r.g}</span>
+                      <span style={{fontSize:11,color:r.gi.c,background:r.gi.bg,padding:"2px 8px",borderRadius:4,fontWeight:600}}>{r.gi.icon}{r.gi.icon?' ':''}{r.g}</span>
                       <span style={{fontSize:12,color:"#8a9ab0"}}>最後 {r.d}</span>
                       <span style={{fontSize:12,fontWeight:600,color:r.c}}>沉睡{r.days}天</span>
                       <span style={{fontSize:12,color:"#8a9ab0"}}>累計 {w(r.t)}</span></div>))}
@@ -2135,11 +2400,11 @@ function KshipApp() {
                   <select style={{...selStyle,width:"auto",minWidth:100}}><option>全部</option><option>本月</option><option>本季</option><option>本年</option></select>
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  {custList.slice(0,6).map(function(c,i){return{r:i+1,n:c.name,t:c.pkgCount,cnt:c.pkgCount,g:c.grade,medal:i===0?"🥇":i===1?"🥈":i===2?"🥉":""};}).map((r,i)=>(
+                  {custList.slice(0,6).map(function(c,i){var gi=getGradeInfo(c.grade);return{r:i+1,n:c.name,t:c.totalSpend,cnt:c.shipCount,g:c.grade,gi:gi,medal:i===0?"🥇":i===1?"🥈":i===2?"🥉":""};}).map((r,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<5?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                       <span style={{minWidth:28,fontWeight:700,fontSize:r.medal?16:13,textAlign:"center"}}>{r.medal||r.r+"."}</span>
                       <span style={{flex:1,fontWeight:600,minWidth:60}}>{r.n}</span>
-                      <span style={{fontSize:11,color:r.g==="VIP"?"#c4953a":"#34537d",background:r.g==="VIP"?"#c4953a15":"#e8edf4",padding:"2px 8px",borderRadius:4}}>{r.g}</span>
+                      <span style={{fontSize:11,color:r.gi.c,background:r.gi.bg,padding:"2px 8px",borderRadius:4,fontWeight:600}}>{r.gi.icon}{r.gi.icon?' ':''}{r.g}</span>
                       <span style={{fontWeight:700,color:"#34537d"}}>{w(r.t)}</span>
                       <span style={{fontSize:12,color:"#8a9ab0"}}>{r.cnt}次</span></div>))}
                 </div>
@@ -2165,11 +2430,24 @@ function KshipApp() {
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>客戶等級分佈</h3>
-                  {[{l:"VIP",v:custStats.vip,pct:custStats.total?Math.round(custStats.vip/custStats.total*100):0,c:"#c4953a"},{l:"一般",v:custStats.total-custStats.vip,pct:custStats.total?Math.round((custStats.total-custStats.vip)/custStats.total*100):0,c:"#34537d"}].map((r,i)=>(
-                    <div key={i} style={{padding:"8px 0",borderBottom:i<1?"1px solid #f0f2f5":"none"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}><span>{r.l}</span><span style={{fontWeight:600}}>{r.v} 位</span></div>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{flex:1,background:"#eef2f7",borderRadius:3,height:6}}><div style={{background:r.c,borderRadius:3,height:6,width:`${r.pct}%`}}/></div><span style={{fontSize:11,color:"#8a9ab0"}}>{r.pct}%</span></div>
-                    </div>))}
+                  {GRADES.map(function(g,gi){
+                    var cnt=custList.filter(function(c){return c.grade===g.k;}).length;
+                    var pct=custStats.total?Math.round(cnt/custStats.total*100):0;
+                    return (
+                      <div key={gi} style={{padding:"8px 0",borderBottom:gi<GRADES.length-1?"1px solid #f0f2f5":"none"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:4,fontSize:13}}>
+                          <span style={{display:"flex",alignItems:"center",gap:6}}>{g.icon||'👤'} {g.k}{gi>0?' (折NT$'+g.discount+'/kg)':''}</span>
+                          <span style={{fontWeight:600}}>{cnt} 位</span>
+                        </div>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <div style={{flex:1,background:"#eef2f7",borderRadius:3,height:6}}>
+                            <div style={{background:g.c,borderRadius:3,height:6,width:pct+'%'}}/>
+                          </div>
+                          <span style={{fontSize:11,color:"#8a9ab0"}}>{pct}%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 12px",color:"#34537d"}}>消費區間分佈</h3>
@@ -2556,7 +2834,7 @@ function KshipApp() {
                       <Inp label="備註" value={newMeal.note} onChange={e=>setNewMeal(f=>({...f,note:e.target.value}))} placeholder="午餐" />
                     </div>
                     <div style={{display:"flex",gap:8,marginTop:12}}>
-                      <button onClick={()=>{if(newMeal.date&&newMeal.amount){setMealExpenses(p=>[{id:Date.now(),date:newMeal.date,amount:+newMeal.amount||0,people:+newMeal.people||0,note:newMeal.note},...p]);setNewMeal({date:"",amount:"",people:"",note:""});setShowAddMeal(false);}}} style={btnP}>儲存</button>
+                      <button onClick={async ()=>{if(newMeal.date&&newMeal.amount){var amt=+newMeal.amount||0;var noteStr=newMeal.note||'餐費';await addExpense('飯錢',amt,noteStr+(newMeal.people?' ('+newMeal.people+'人)':''),newMeal.date);setNewMeal({date:"",amount:"",people:"",note:""});setShowAddMeal(false);}}} style={btnP}>儲存</button>
                       <button onClick={()=>{setShowAddMeal(false);setNewMeal({date:"",amount:"",people:"",note:""});}} style={btnS}>取消</button>
                     </div>
                   </div>
@@ -2607,7 +2885,7 @@ function KshipApp() {
                       <Inp label="數量" type="number" value={newPacking.qty} onChange={e=>setNewPacking(f=>({...f,qty:e.target.value}))} placeholder="0" />
                     </div>
                     <div style={{display:"flex",gap:8,marginTop:12}}>
-                      <button onClick={()=>{if(newPacking.date&&newPacking.item&&newPacking.amount){setPackingExpenses(p=>[{id:Date.now(),date:newPacking.date,item:newPacking.item,amount:+newPacking.amount||0,qty:+newPacking.qty||0,note:newPacking.note},...p]);setNewPacking({date:"",item:"",amount:"",qty:"",note:""});setShowAddPacking(false);}}} style={btnP}>儲存</button>
+                      <button onClick={async ()=>{if(newPacking.date&&newPacking.item&&newPacking.amount){var amt=+newPacking.amount||0;var noteStr=newPacking.item+(newPacking.qty?' x'+newPacking.qty:'');await addExpense('包材',amt,noteStr,newPacking.date);setNewPacking({date:"",item:"",amount:"",qty:"",note:""});setShowAddPacking(false);}}} style={btnP}>儲存</button>
                       <button onClick={()=>{setShowAddPacking(false);setNewPacking({date:"",item:"",amount:"",qty:"",note:""});}} style={btnS}>取消</button>
                     </div>
                   </div>
@@ -2645,25 +2923,153 @@ function KshipApp() {
             {/* ═══ 運費設定 ═══ */}
             {tab === "set-shipping" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>運費計算方式</h3>
-                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                    <Inp label="基本運費（/kg）" defaultValue="5000" type="number" /><Inp label="續重費用（/kg）" defaultValue="3000" type="number" /><Inp label="最低收費" defaultValue="8000" type="number" />
+                {/* 總覽標頭 */}
+                <div style={{background:"linear-gradient(135deg,#34537d 0%,#4a6d9e 100%)",borderRadius:10,padding:"18px 20px",color:"#fff"}}>
+                  <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>🚚 運費設定</div>
+                  <div style={{fontSize:12,opacity:.85}}>設定轉機、直飛、海運的每公斤單價，會員等級折扣會自動套用</div>
+                </div>
+
+                {/* 三種運送方式卡片 */}
+                {['transit','direct','sea'].map(function(mk){
+                  var m = shipRates[mk];
+                  var def = DEFAULT_SHIP_RATES[mk];
+                  return (
+                    <div key={mk} style={{background:"#fff",borderRadius:10,border:"1px solid #dce3ed",overflow:"hidden"}}>
+                      <div style={{background:mk==='transit'?'#e8edf4':mk==='direct'?'#ddf0e0':'#dce8f4',padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8}}>
+                          <span style={{fontSize:22}}>{m.icon}</span>
+                          <div>
+                            <div style={{fontSize:15,fontWeight:700,color:"#1e2a3a"}}>{m.label}</div>
+                            <div style={{fontSize:11,color:"#8a9ab0"}}>{m.note}</div>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{padding:"16px 18px"}}>
+                        <div style={{fontSize:12,fontWeight:600,color:"#34537d",marginBottom:10}}>重量區間單價（NT$/kg）</div>
+                        <div style={{overflowX:"auto"}}>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:400}}>
+                            <thead>
+                              <tr style={{background:"#f8fafc"}}>
+                                <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>重量區間</th>
+                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>單價 NT$/kg</th>
+                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>VIP 折後</th>
+                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>VVIP 折後</th>
+                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>SVIP 折後</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {m.tiers.map(function(t,ti){
+                                return (
+                                  <tr key={ti} style={{borderBottom:"1px solid #f0f2f5"}}>
+                                    <td style={{padding:"8px 10px",fontWeight:500}}>{t.min} ~ {t.max>=9999?'∞':t.max} kg</td>
+                                    <td style={{padding:"6px 10px",textAlign:"center"}}>
+                                      <input
+                                        id={"ship-"+mk+"-"+ti}
+                                        defaultValue={t.price}
+                                        type="number"
+                                        style={{width:70,textAlign:"center",border:"1.5px solid #dce3ed",borderRadius:6,padding:"6px 8px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit"}}
+                                        onFocus={function(e){e.target.style.borderColor='#34537d';}}
+                                        onBlur={function(e){e.target.style.borderColor='#dce3ed';}}
+                                      />
+                                    </td>
+                                    <td style={{padding:"8px 10px",textAlign:"center",color:"#c4953a",fontWeight:600}}>{Math.max(0,t.price-5)}</td>
+                                    <td style={{padding:"8px 10px",textAlign:"center",color:"#b8860b",fontWeight:600}}>{Math.max(0,t.price-10)}</td>
+                                    <td style={{padding:"8px 10px",textAlign:"center",color:"#7b2d8e",fontWeight:600}}>{Math.max(0,t.price-15)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr",gap:10,marginTop:12}}>
+                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                            <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>最低收費（NT$）</span>
+                            <input id={"ship-"+mk+"-min"} defaultValue={m.minCharge||0} type="number" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                          </div>
+                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                            <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>備註說明</span>
+                            <input id={"ship-"+mk+"-note"} defaultValue={m.note||''} style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* VIP 折扣對照 */}
+                <div style={{background:"#fff",borderRadius:10,padding:18,border:"1px solid #dce3ed"}}>
+                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 12px",color:"#34537d"}}>🏷️ 會員等級折扣對照</h3>
+                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4,1fr)",gap:10}}>
+                    {GRADES.map(function(g,gi){return(
+                      <div key={gi} style={{background:g.bg,borderRadius:8,padding:"12px 10px",textAlign:"center",border:"1px solid "+g.c+"30"}}>
+                        <div style={{fontSize:16,marginBottom:2}}>{g.icon||'👤'}</div>
+                        <div style={{fontSize:13,fontWeight:700,color:g.c}}>{g.k}</div>
+                        <div style={{fontSize:18,fontWeight:800,color:gi===0?"#8a9ab0":"#5b9e6f",marginTop:4}}>{gi===0?'—':'-NT$'+g.discount+'/kg'}</div>
+                      </div>
+                    );})}
                   </div>
                 </div>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>重量區間設定</h3>
-                  {[{range:"0 - 1 kg",price:"₩ 8,000"},{range:"1 - 5 kg",price:"₩ 5,000/kg"},{range:"5 - 10 kg",price:"₩ 4,500/kg"},{range:"10 kg 以上",price:"₩ 4,000/kg"}].map((r,i)=>(
-                    <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"10px 0",borderBottom:i<3?"1px solid #f0f2f5":"none",fontSize:13}}>
-                      <span style={{color:"#4a5568"}}>{r.range}</span><span style={{fontWeight:600}}>{r.price}</span></div>))}
-                </div>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>附加費用</h3>
-                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
-                    <Inp label="偏遠地區" defaultValue="3000" type="number" /><Inp label="易碎品加收" defaultValue="2000" type="number" /><Inp label="超大件" defaultValue="5000" type="number" />
+
+                {/* 運費試算器 */}
+                <div style={{background:"#fff",borderRadius:10,padding:18,border:"2px solid #34537d30"}}>
+                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 14px",color:"#34537d"}}>🧮 運費試算器</h3>
+                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10,marginBottom:14}}>
+                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>運送方式</span>
+                      <select id="sim-method" defaultValue="transit" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}}>
+                        <option value="transit">🔄 轉機</option>
+                        <option value="direct">✈️ 直飛</option>
+                        <option value="sea">🚢 海運</option>
+                      </select>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>重量（kg）</span>
+                      <input id="sim-weight" type="number" defaultValue="10" placeholder="10" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>會員等級</span>
+                      <select id="sim-grade" defaultValue="一般" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}}>
+                        {GRADES.map(function(g,gi){return <option key={gi} value={g.k}>{g.icon}{g.icon?' ':''}{g.k}</option>;})}
+                      </select>
+                    </div>
+                  </div>
+                  <button onClick={function(){
+                    var method=document.getElementById('sim-method').value;
+                    var weight=parseFloat(document.getElementById('sim-weight').value)||0;
+                    var grade=document.getElementById('sim-grade').value;
+                    var result=calcShipCost(method, weight, grade, shipRatesRef.current);
+                    var box=document.getElementById('sim-result');
+                    if(box) box.innerHTML=
+                      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">'+
+                      '<div style="color:#8a9ab0">運送方式</div><div style="font-weight:600">'+result.method+'</div>'+
+                      '<div style="color:#8a9ab0">重量</div><div style="font-weight:600">'+weight+' kg</div>'+
+                      '<div style="color:#8a9ab0">適用區間</div><div style="font-weight:600">'+result.tierLabel+' → NT$'+result.tierPrice+'/kg</div>'+
+                      '<div style="color:#8a9ab0">原價</div><div style="font-weight:700;font-size:15px">NT$ '+(result.base).toLocaleString()+'</div>'+
+                      (result.discount>0?'<div style="color:#c4953a">會員折扣</div><div style="font-weight:700;color:#c4953a;font-size:15px">- NT$ '+(result.discount).toLocaleString()+' <span style="font-size:11px;font-weight:400">('+result.gradeDiscount+'/kg × '+weight+'kg)</span></div>':'')+
+                      '<div style="color:#34537d;font-size:14px;font-weight:700;border-top:2px solid #34537d;padding-top:8px;grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span>應收金額</span><span style="font-size:22px;color:#34537d">NT$ '+(result.final).toLocaleString()+'</span></div>'+
+                      '</div>';
+                  }} style={{...btnP,width:"100%",padding:"10px",fontSize:14,borderRadius:8,marginBottom:12}}>💰 試算運費</button>
+                  <div id="sim-result" style={{background:"#f5f8fc",borderRadius:8,padding:16,minHeight:40}}>
+                    <div style={{textAlign:"center",color:"#8a9ab0",fontSize:13}}>輸入重量後按「試算運費」查看結果</div>
                   </div>
                 </div>
-                <button style={{...btnP,padding:"12px",fontSize:15,width:"100%",borderRadius:8}}>儲存設定</button>
+
+                {/* 儲存按鈕 */}
+                <button onClick={function(){
+                  var newRates = JSON.parse(JSON.stringify(shipRatesRef.current));
+                  ['transit','direct','sea'].forEach(function(mk){
+                    newRates[mk].tiers.forEach(function(t,ti){
+                      var el=document.getElementById('ship-'+mk+'-'+ti);
+                      if(el) t.price=parseFloat(el.value)||0;
+                    });
+                    var minEl=document.getElementById('ship-'+mk+'-min');
+                    if(minEl) newRates[mk].minCharge=parseFloat(minEl.value)||0;
+                    var noteEl=document.getElementById('ship-'+mk+'-note');
+                    if(noteEl) newRates[mk].note=noteEl.value;
+                  });
+                  saveShipRates(newRates);
+                  alert('✅ 運費設定已儲存至 Supabase\n\n🔄 轉機：'+newRates.transit.tiers.map(function(t){return t.min+'~'+(t.max>=9999?'∞':t.max)+'kg = NT$'+t.price;}).join('、')+'\n✈️ 直飛：'+newRates.direct.tiers.map(function(t){return t.min+'~'+(t.max>=9999?'∞':t.max)+'kg = NT$'+t.price;}).join('、')+'\n🚢 海運：'+newRates.sea.tiers.map(function(t){return t.min+'~'+(t.max>=9999?'∞':t.max)+'kg = NT$'+t.price;}).join('、'));
+                }} style={{...btnP,padding:"14px",fontSize:15,width:"100%",borderRadius:10,background:"linear-gradient(135deg,#34537d,#4a6d9e)",color:"#fff",letterSpacing:1}}>💾 儲存運費設定至 Supabase</button>
               </div>
             )}
 
@@ -2695,42 +3101,324 @@ function KshipApp() {
             {/* ═══ 客戶等級設定（可編輯）═══ */}
             {tab === "set-tier" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>VIP 等級規則（可編輯）</h3>
-                  <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                      <span style={{fontSize:13,fontWeight:600,color:"#c4953a",background:"#c4953a15",padding:"3px 10px",borderRadius:4}}>VIP</span>
-                      <span style={{fontSize:13}}>累計包裹 ≥</span>
-                      <input id="vip-threshold" defaultValue={localStorage.getItem("hj_vip_threshold")||"50"} style={{width:60,textAlign:"center",border:"1.5px solid #dce3ed",borderRadius:6,padding:"6px 8px",fontSize:14,fontWeight:700,outline:"none"}} /> 件
+                {/* 等級制度總覽卡 */}
+                <div style={{background:"linear-gradient(135deg,#34537d 0%,#4a6d9e 100%)",borderRadius:10,padding:"18px 20px",color:"#fff"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                    <div>
+                      <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>📊 會員等級制度</div>
+                      <div style={{fontSize:12,opacity:.85}}>當月出貨公斤數達標 → 下月自動升級 ｜ 連續未達標月數 → 自動降級</div>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                      <span style={{fontSize:13,fontWeight:600,color:"#c4953a",background:"#c4953a15",padding:"3px 10px",borderRadius:4}}>VIP</span>
-                      <span style={{fontSize:13}}>運費折扣</span>
-                      <input id="vip-discount" defaultValue={localStorage.getItem("hj_vip_discount")||"5"} style={{width:50,textAlign:"center",border:"1.5px solid #dce3ed",borderRadius:6,padding:"6px 8px",fontSize:14,fontWeight:700,outline:"none"}} /> %
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",paddingTop:8,borderTop:"1px solid #f0f2f5"}}>
-                      <span style={{fontSize:13,fontWeight:600,color:"#34537d",background:"#34537d15",padding:"3px 10px",borderRadius:4}}>一般</span>
-                      <span style={{fontSize:13,color:"#8a9ab0"}}>累計包裹 &lt; VIP 門檻，無折扣</span>
+                    <div style={{fontSize:11,background:"rgba(255,255,255,.15)",padding:"5px 12px",borderRadius:6}}>
+                      共 {custStats.total} 位會員
                     </div>
                   </div>
                 </div>
-                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>目前統計</h3>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
-                    {[{l:"VIP",v:custStats.vip+" 位",c:"#c4953a"},{l:"一般",v:(custStats.total-custStats.vip)+" 位",c:"#34537d"},{l:"總客戶",v:custStats.total+" 位",c:"#5b9e6f"}].map((s,i)=>(
-                      <div key={i} style={{background:"#f5f8fc",borderRadius:6,padding:10,textAlign:"center"}}><div style={{fontSize:11,color:"#8a9ab0",marginBottom:4}}>{s.l}</div><div style={{fontSize:18,fontWeight:700,color:s.c}}>{s.v}</div></div>))}
+
+                {/* 4 等級卡片 */}
+                <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr",gap:12}}>
+                  {GRADES.map(function(g,gi){
+                    var cnt = gi===0
+                      ? custList.filter(function(c){return c.grade==='一般';}).length
+                      : custList.filter(function(c){return c.grade===g.k;}).length;
+                    var pct = custStats.total>0 ? Math.round(cnt/custStats.total*100) : 0;
+                    var monthKgAll = gi===0 ? null : custList.filter(function(c){return c.grade===g.k;}).reduce(function(s,c){return s+(c.thisMonthKg||0);},0);
+                    return (
+                      <div key={gi} style={{background:"#fff",borderRadius:10,border:"2px solid "+g.c+"30",overflow:"hidden"}}>
+                        {/* 卡片標頭 */}
+                        <div style={{background:g.bg,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:8}}>
+                            <span style={{fontSize:22}}>{g.icon||'👤'}</span>
+                            <div>
+                              <div style={{fontSize:15,fontWeight:700,color:g.c}}>{g.k}</div>
+                              <div style={{fontSize:11,color:g.c,opacity:.7}}>{gi===0?'新註冊會員':'VIP 等級 '+(gi)}</div>
+                            </div>
+                          </div>
+                          <div style={{textAlign:"right"}}>
+                            <div style={{fontSize:20,fontWeight:800,color:g.c}}>{cnt}</div>
+                            <div style={{fontSize:10,color:"#8a9ab0"}}>位（{pct}%）</div>
+                          </div>
+                        </div>
+                        {/* 卡片內容 */}
+                        <div style={{padding:"14px 16px"}}>
+                          {gi===0 ? (
+                            <div style={{fontSize:13,color:"#8a9ab0",lineHeight:2}}>
+                              <div style={{display:"flex",justifyContent:"space-between"}}><span>升級門檻</span><span style={{fontWeight:600,color:"#4a5568"}}>當月出貨 ≥ 100 kg → VIP</span></div>
+                              <div style={{display:"flex",justifyContent:"space-between"}}><span>運費折扣</span><span style={{fontWeight:600,color:"#4a5568"}}>無折扣</span></div>
+                              <div style={{display:"flex",justifyContent:"space-between"}}><span>降級規則</span><span style={{fontWeight:600,color:"#4a5568"}}>—</span></div>
+                            </div>
+                          ) : (
+                            <div style={{fontSize:13,color:"#8a9ab0",lineHeight:2}}>
+                              <div style={{display:"flex",justifyContent:"space-between"}}><span>升級門檻</span><span style={{fontWeight:700,color:g.c}}>當月出貨 ≥ {g.kg} kg</span></div>
+                              <div style={{display:"flex",justifyContent:"space-between"}}><span>運費折扣</span><span style={{fontWeight:700,color:"#5b9e6f"}}>NT${g.discount}/kg</span></div>
+                              <div style={{display:"flex",justifyContent:"space-between"}}><span>降級規則</span><span style={{fontWeight:600,color:"#c0504d"}}>連續 {g.downMonths} 個月未達 {g.kg}kg</span></div>
+                              {monthKgAll!==null && <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px dashed #e4e9f0",paddingTop:4,marginTop:2}}><span>本月總出貨</span><span style={{fontWeight:700,color:"#34537d"}}>{Math.round(monthKgAll)} kg</span></div>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 升降級規則說明 */}
+                <div style={{background:"#fff",borderRadius:10,padding:18,border:"1px solid #dce3ed"}}>
+                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 14px",color:"#34537d"}}>📋 升降級規則詳細</h3>
+                  <div style={{display:"flex",flexDirection:"column",gap:0}}>
+                    {/* 升級表 */}
+                    <div style={{overflowX:"auto"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:500}}>
+                        <thead>
+                          <tr style={{background:"#f5f8fc"}}>
+                            <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",fontWeight:600}}>等級</th>
+                            <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",fontWeight:600}}>升級條件</th>
+                            <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",fontWeight:600}}>每公斤折扣</th>
+                            <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",fontWeight:600}}>降級保護</th>
+                            <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"2px solid #dce3ed",fontWeight:600}}>目前人數</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {GRADES.map(function(g,gi){
+                            var cnt = custList.filter(function(c){return c.grade===g.k;}).length;
+                            return (
+                              <tr key={gi} style={{borderBottom:"1px solid #f0f2f5"}}>
+                                <td style={{padding:"10px 12px"}}>
+                                  <span style={{fontSize:12,fontWeight:700,color:g.c,background:g.bg,padding:"3px 10px",borderRadius:5}}>{g.icon}{g.icon?' ':''}{g.k}</span>
+                                </td>
+                                <td style={{padding:"10px 12px",textAlign:"center",fontWeight:500}}>
+                                  {gi===0 ? <span style={{color:"#8a9ab0"}}>—</span> : <span>當月 ≥ <b style={{color:g.c}}>{g.kg}</b> kg</span>}
+                                </td>
+                                <td style={{padding:"10px 12px",textAlign:"center"}}>
+                                  {gi===0 ? <span style={{color:"#8a9ab0"}}>無</span> : <span style={{fontWeight:700,color:"#5b9e6f"}}>NT${g.discount}/kg</span>}
+                                </td>
+                                <td style={{padding:"10px 12px",textAlign:"center"}}>
+                                  {gi===0 ? <span style={{color:"#8a9ab0"}}>—</span> : <span style={{color:"#c0504d",fontWeight:500}}>連續 {g.downMonths} 月未達標</span>}
+                                </td>
+                                <td style={{padding:"10px 12px",textAlign:"center"}}><span style={{fontWeight:700,color:g.c}}>{cnt} 位</span></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
-                <button onClick={async ()=>{
-                  var t=document.getElementById("vip-threshold").value;
-                  var d=document.getElementById("vip-discount").value;
-                  localStorage.setItem("hj_vip_threshold",t);
-                  localStorage.setItem("hj_vip_discount",d);
+
+                {/* 流程示意 */}
+                <div style={{background:"#fff",borderRadius:10,padding:18,border:"1px solid #dce3ed"}}>
+                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 14px",color:"#34537d"}}>🔄 升降級流程</h3>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:0,flexWrap:"wrap",padding:"8px 0"}}>
+                    {GRADES.map(function(g,gi){
+                      return (
+                        <React.Fragment key={gi}>
+                          <div style={{textAlign:"center",minWidth:70}}>
+                            <div style={{fontSize:20,marginBottom:4}}>{g.icon||'👤'}</div>
+                            <div style={{fontSize:12,fontWeight:700,color:g.c,background:g.bg,padding:"4px 12px",borderRadius:6,display:"inline-block"}}>{g.k}</div>
+                            <div style={{fontSize:10,color:"#8a9ab0",marginTop:3}}>{gi===0?'0 kg':g.kg+'kg'}</div>
+                          </div>
+                          {gi<GRADES.length-1 && (
+                            <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"0 6px"}}>
+                              <div style={{fontSize:10,color:"#5b9e6f",fontWeight:600}}>達標↗</div>
+                              <div style={{fontSize:16,color:"#34537d"}}>⇌</div>
+                              <div style={{fontSize:10,color:"#c0504d",fontWeight:600}}>未達↘</div>
+                            </div>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                  <div style={{background:"#f5f8fc",borderRadius:8,padding:"12px 14px",marginTop:12,fontSize:12,color:"#4a5568",lineHeight:1.8}}>
+                    <div><b style={{color:"#5b9e6f"}}>⬆ 升級邏輯：</b>當月出貨總公斤數達到門檻 → <b>下個月自動升級</b>（跳級也可以，例如一般會員直接達到 500kg 就升 SVIP）</div>
+                    <div><b style={{color:"#c0504d"}}>⬇ 降級邏輯：</b>連續 N 個月出貨未達到當前等級門檻 → <b>自動降級</b>（VIP 連續2月、VVIP/SVIP 連續3月）</div>
+                    <div><b style={{color:"#34537d"}}>🛡 降級保護：</b>中間任一月達標，未達標月數歸零重新計算</div>
+                  </div>
+                </div>
+
+                {/* 目前統計 */}
+                <div style={{background:"#fff",borderRadius:10,padding:18,border:"1px solid #dce3ed"}}>
+                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 14px",color:"#34537d"}}>📈 等級分佈統計</h3>
+                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(5,1fr)",gap:10,marginBottom:16}}>
+                    {[
+                      {l:"總會員",v:custStats.total,c:"#34537d",icon:"👥"},
+                      {l:"一般",v:custList.filter(function(c){return c.grade==='一般';}).length,c:GRADES[0].c,icon:"👤"},
+                      {l:"VIP",v:custList.filter(function(c){return c.grade==='VIP';}).length,c:GRADES[1].c,icon:"⭐"},
+                      {l:"VVIP",v:custList.filter(function(c){return c.grade==='VVIP';}).length,c:GRADES[2].c,icon:"👑"},
+                      {l:"SVIP",v:custList.filter(function(c){return c.grade==='SVIP';}).length,c:GRADES[3].c,icon:"💎"}
+                    ].map(function(s,i){return(
+                      <div key={i} style={{background:"#f5f8fc",borderRadius:8,padding:"12px 8px",textAlign:"center"}}>
+                        <div style={{fontSize:16,marginBottom:2}}>{s.icon}</div>
+                        <div style={{fontSize:11,color:"#8a9ab0",marginBottom:2}}>{s.l}</div>
+                        <div style={{fontSize:20,fontWeight:800,color:s.c}}>{s.v}<span style={{fontSize:11,fontWeight:400,color:"#8a9ab0"}}> 位</span></div>
+                      </div>
+                    );})}
+                  </div>
+                  {/* 等級條狀圖 */}
+                  {GRADES.map(function(g,gi){
+                    var cnt = custList.filter(function(c){return c.grade===g.k;}).length;
+                    var pct = custStats.total>0 ? Math.round(cnt/custStats.total*100) : 0;
+                    return (
+                      <div key={gi} style={{marginBottom:8}}>
+                        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
+                          <span style={{fontWeight:600,color:g.c}}>{g.icon}{g.icon?' ':''}{g.k}</span>
+                          <span style={{color:"#8a9ab0"}}>{cnt} 位（{pct}%）</span>
+                        </div>
+                        <div style={{background:"#eef2f7",borderRadius:4,height:8,overflow:"hidden"}}>
+                          <div style={{background:g.c,borderRadius:4,height:8,width:pct+'%',transition:"width .3s ease"}}/>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* 即將升降級預警 */}
+                <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr",gap:12}}>
+                  <div style={{background:"#fff",borderRadius:10,padding:16,border:"1px solid #dce3ed"}}>
+                    <h3 style={{fontSize:13,fontWeight:700,margin:"0 0 10px",color:"#5b9e6f"}}>⬆ 即將升級（本月接近門檻）</h3>
+                    {(function(){
+                      var list=custList.filter(function(c){
+                        var tk=c.thisMonthKg||0;
+                        if(c.grade==='一般' && tk>=70 && tk<100) return true;
+                        if(c.grade==='VIP' && tk>=200 && tk<300) return true;
+                        if(c.grade==='VVIP' && tk>=350 && tk<500) return true;
+                        return false;
+                      }).slice(0,5);
+                      if(list.length===0) return <div style={{fontSize:12,color:"#8a9ab0",textAlign:"center",padding:12}}>目前無即將升級的會員</div>;
+                      return list.map(function(c,i){
+                        var nextG = c.grade==='一般'?'VIP':c.grade==='VIP'?'VVIP':'SVIP';
+                        var nextKg = c.grade==='一般'?100:c.grade==='VIP'?300:500;
+                        var remain = nextKg-(c.thisMonthKg||0);
+                        return (
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:i<list.length-1?"1px solid #f0f2f5":"none",fontSize:12}}>
+                            <span style={{fontWeight:600,flex:1}}>{c.name}</span>
+                            <span style={{color:"#8a9ab0"}}>{c.grade} → {nextG}</span>
+                            <span style={{fontWeight:700,color:"#5b9e6f"}}>差 {Math.round(remain)} kg</span>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                  <div style={{background:"#fff",borderRadius:10,padding:16,border:"1px solid #fde8e8"}}>
+                    <h3 style={{fontSize:13,fontWeight:700,margin:"0 0 10px",color:"#c0504d"}}>⬇ 降級風險（連續未達標）</h3>
+                    {(function(){
+                      var list=custList.filter(function(c){
+                        if(c.grade==='一般') return false;
+                        var gi=GRADES.findIndex(function(g){return g.k===c.grade;});
+                        if(gi<1) return false;
+                        var gInfo=GRADES[gi];
+                        var belowCount=0;
+                        for(var mi=0;mi<gInfo.downMonths-1&&mi<c.monthlyKg.length;mi++){
+                          if((c.monthlyKg[mi]||0)<gInfo.kg) belowCount++; else break;
+                        }
+                        return belowCount>=1;
+                      }).slice(0,5);
+                      if(list.length===0) return <div style={{fontSize:12,color:"#8a9ab0",textAlign:"center",padding:12}}>目前無降級風險的會員</div>;
+                      return list.map(function(c,i){
+                        var gi=GRADES.findIndex(function(g){return g.k===c.grade;});
+                        var gInfo=GRADES[gi];
+                        var belowCount=0;
+                        for(var mi=0;mi<gInfo.downMonths&&mi<c.monthlyKg.length;mi++){
+                          if((c.monthlyKg[mi]||0)<gInfo.kg) belowCount++; else break;
+                        }
+                        return (
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:i<list.length-1?"1px solid #f0f2f5":"none",fontSize:12}}>
+                            <span style={{fontWeight:600,flex:1}}>{c.name}</span>
+                            <span style={{fontSize:11,fontWeight:600,color:gInfo.c,background:gInfo.bg,padding:"2px 6px",borderRadius:4}}>{c.grade}</span>
+                            <span style={{fontWeight:700,color:"#c0504d"}}>已 {belowCount}/{gInfo.downMonths} 月</span>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+
+                {/* 手動覆蓋清單 */}
+                <div style={{background:"#fff",borderRadius:10,padding:18,border:"2px solid #c4953a40"}}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
+                    <h3 style={{fontSize:14,fontWeight:700,margin:0,color:"#c4953a"}}>🔧 手動等級覆蓋清單</h3>
+                    <span style={{fontSize:11,color:"#8a9ab0",background:"#f5f8fc",padding:"3px 10px",borderRadius:4}}>
+                      共 {Object.keys(manualGrades).length} 位手動設定
+                    </span>
+                  </div>
+                  {Object.keys(manualGrades).length===0 ? (
+                    <div style={{textAlign:"center",padding:"20px 0",color:"#8a9ab0",fontSize:13}}>
+                      目前沒有手動覆蓋的會員<br/>
+                      <span style={{fontSize:11}}>可在「客戶管理 → 客戶資料」中手動調整個別會員等級</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{overflowX:"auto"}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:500}}>
+                          <thead>
+                            <tr style={{background:"#fdf5e6"}}>
+                              <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #e4d5b0"}}>會員編號</th>
+                              <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #e4d5b0"}}>手動等級</th>
+                              <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #e4d5b0"}}>自動判定</th>
+                              <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #e4d5b0"}}>設定人 / 時間</th>
+                              <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #e4d5b0"}}>備註</th>
+                              <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #e4d5b0"}}>操作</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(manualGrades).map(function(entry,i){
+                              var code=entry[0], info=entry[1];
+                              var cust=custList.find(function(c){return c.code===code;});
+                              var custName=cust?cust.name:code;
+                              var autoGrade=cust?cust.autoGrade:'—';
+                              var mgi=getGradeInfo(info.grade);
+                              var agi=getGradeInfo(autoGrade);
+                              return (
+                                <tr key={i} style={{borderBottom:"1px solid #f0f2f5"}}>
+                                  <td style={{padding:"10px"}}>
+                                    <div style={{fontWeight:600}}>{custName}</div>
+                                    <div style={{fontSize:11,color:"#8a9ab0"}}>{code}</div>
+                                  </td>
+                                  <td style={{padding:"10px",textAlign:"center"}}>
+                                    <span style={{fontSize:12,fontWeight:700,color:mgi.c,background:mgi.bg,padding:"3px 10px",borderRadius:5}}>{mgi.icon}{mgi.icon?' ':''}{info.grade}</span>
+                                  </td>
+                                  <td style={{padding:"10px",textAlign:"center"}}>
+                                    <span style={{fontSize:11,color:agi.c,opacity:.7}}>{autoGrade}</span>
+                                    {autoGrade!==info.grade && <span style={{fontSize:9,color:"#c4953a",marginLeft:4}}>⚠</span>}
+                                  </td>
+                                  <td style={{padding:"10px",fontSize:11,color:"#8a9ab0"}}>
+                                    {info.setBy||'—'}<br/>{info.setAt||''}
+                                  </td>
+                                  <td style={{padding:"10px",fontSize:12,color:"#4a5568"}}>{info.note||'—'}</td>
+                                  <td style={{padding:"10px",textAlign:"center"}}>
+                                    <div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                                      <button onClick={function(){
+                                        if(cust) { selectCustomer(cust); }
+                                      }} style={{padding:"4px 10px",background:"#e8edf4",border:"none",borderRadius:4,fontSize:11,cursor:"pointer",fontFamily:"inherit",color:"#34537d",fontWeight:600}}>查看</button>
+                                      <button onClick={function(){
+                                        if(!confirm('確定取消 '+custName+' 的手動等級，恢復自動計算？')) return;
+                                        clearManualGrade(code);
+                                      }} style={{padding:"4px 10px",background:"#fde8e8",border:"none",borderRadius:4,fontSize:11,cursor:"pointer",fontFamily:"inherit",color:"#c0504d",fontWeight:600}}>移除</button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div style={{marginTop:10,display:"flex",justifyContent:"flex-end"}}>
+                        <button onClick={function(){
+                          if(!confirm('確定清除所有手動等級覆蓋嗎？\n\n所有會員將恢復為自動計算等級。')) return;
+                          saveManualGrades({});
+                          loadCustomers();
+                          alert('✅ 已清除全部手動等級覆蓋');
+                        }} style={{padding:"6px 16px",background:"#fde8e8",border:"1px solid #f0d0ce",borderRadius:6,fontSize:12,cursor:"pointer",fontFamily:"inherit",color:"#c0504d",fontWeight:600}}>🗑 清除全部手動覆蓋</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 儲存按鈕 */}
+                <button onClick={async function(){
                   try {
-                    await sb.from('finance_records').upsert({ type:'vip_settings', record_type:'vip_settings', amount:0, description:JSON.stringify({threshold:t,discount:d}), date:new Date().toISOString().slice(0,10) }, { onConflict:'type' });
-                  } catch(e){}
-                  alert("✅ 設定已儲存（本地 + Supabase）\nVIP 門檻："+t+" 件\n運費折扣："+d+"%");
-                }} style={{...btnP,padding:"14px",fontSize:15,width:"100%",borderRadius:8,background:"#34537d",color:"#fff"}}>💾 儲存設定</button>
+                    var settings = GRADES.map(function(g){return {k:g.k,kg:g.kg,discount:g.discount,downMonths:g.downMonths};});
+                    await sb.from('finance_records').upsert({ type:'vip_tier_settings', record_type:'vip_tier_settings', amount:0, description:JSON.stringify(settings), date:new Date().toISOString().slice(0,10) }, { onConflict:'type' });
+                    alert('✅ 會員等級設定已儲存至 Supabase\n\n⭐ VIP：'+GRADES[1].kg+'kg（折 NT$'+GRADES[1].discount+'/kg）\n👑 VVIP：'+GRADES[2].kg+'kg（折 NT$'+GRADES[2].discount+'/kg）\n💎 SVIP：'+GRADES[3].kg+'kg（折 NT$'+GRADES[3].discount+'/kg）');
+                  } catch(e){ alert('❌ 儲存失敗：'+(e.message||e)); }
+                }} style={{...btnP,padding:"14px",fontSize:15,width:"100%",borderRadius:10,background:"linear-gradient(135deg,#34537d,#4a6d9e)",color:"#fff",letterSpacing:1}}>💾 儲存等級設定至 Supabase</button>
               </div>
             )}
 
@@ -2739,7 +3427,7 @@ function KshipApp() {
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <h3 style={{fontSize:14,fontWeight:600,margin:"0 0 14px",color:"#34537d"}}>角色權限</h3>
-                  {[{role:"老闆",perm:"全部功能",c:"#c4953a"},{role:"主管",perm:"儀表板 + 排班·出勤·請假·簽證 + 客戶",c:"#34537d"},{role:"倉庫員工",perm:"儀表板（無財務）+ 排班·出勤·請假·簽證 + 支出管理",c:"#5b9e6f"},{role:"客服",perm:"客戶管理",c:"#7b6ba5"}].map((r,i)=>(
+                  {[{role:"老闆",perm:"全部功能",c:"#c4953a"},{role:"主管",perm:"儀表板 + 排班·出勤·請假·簽證 + 出貨/付款 + 客戶",c:"#34537d"},{role:"倉庫員工",perm:"儀表板（無財務）+ 排班·出勤·請假·簽證 + 支出管理",c:"#5b9e6f"},{role:"客服",perm:"客戶管理",c:"#7b6ba5"}].map((r,i)=>(
                     <div key={i} style={{display:"flex",alignItems:"center",padding:"10px 0",borderBottom:i<3?"1px solid #f0f2f5":"none",gap:10,fontSize:13,flexWrap:"wrap"}}>
                       <span style={{fontWeight:600,minWidth:70,color:r.c}}>{r.role}</span>
                       <span style={{flex:1,color:"#4a5568"}}>{r.perm}</span>
