@@ -208,30 +208,100 @@ function calcWorkHours(clockIn, clockOut) {
   return Math.round((outM-inM)/60*10)/10;
 }
 
-// ═══ 運費設定系統 ═══
+// ═══ 運費設定系統（按價目表：首重/續重 + 箱子最低計費）═══
 const DEFAULT_SHIP_RATES = {
-  transit: { label:'轉機', icon:'🔄', tiers:[
-    {min:0,max:5,price:280},{min:5,max:10,price:260},{min:10,max:20,price:240},{min:20,max:50,price:220},{min:50,max:9999,price:200}
-  ], minCharge:0, note:'一般 3~5 天到貨' },
-  direct: { label:'直飛', icon:'✈️', tiers:[
-    {min:0,max:5,price:350},{min:5,max:10,price:320},{min:10,max:20,price:300},{min:20,max:50,price:280},{min:50,max:9999,price:260}
-  ], minCharge:0, note:'最快 1~2 天到貨' },
-  sea: { label:'海運', icon:'🚢', tiers:[
-    {min:0,max:10,price:120},{min:10,max:30,price:100},{min:30,max:50,price:90},{min:50,max:9999,price:80}
-  ], minCharge:0, note:'約 7~14 天到貨、限一般貨物' }
+  transit: {
+    label:'轉機', icon:'✈️🔄',
+    cats:[
+      { name:'不分貨',
+        under5:{ firstNTD:325, nextNTD:205, firstKRW:14300, nextKRW:9500 },
+        over5:{ perNTD:205, perKRW:9500 }
+      },
+      { name:'純衣服',
+        under5:{ firstNTD:315, nextNTD:195, firstKRW:13800, nextKRW:9000 },
+        over5:{ perNTD:195, perKRW:9000 }
+      }
+    ],
+    boxFee:{ ntd:40, krw:2000 },
+    boxes:[
+      { name:'1號箱', size:'80×50×63', volKg:42, minKg:38 },
+      { name:'2號箱', size:'70×50×58', volKg:34, minKg:30 },
+      { name:'3號箱', size:'60×45×53', volKg:24, minKg:20 }
+    ],
+    note:'1~3號箱有最低計費重量，3號箱以下依實際重量',
+    rules:'帶電商品可寄送'
+  },
+  direct: {
+    label:'直飛', icon:'✈️',
+    cats:[
+      { name:'不分貨',
+        under5:{ firstNTD:335, nextNTD:215, firstKRW:14800, nextKRW:10000 },
+        over5:{ perNTD:215, perKRW:10000 }
+      }
+    ],
+    boxFee:{ ntd:40, krw:2000 },
+    boxes:[
+      { name:'1號箱', size:'80×50×63', volKg:42 },
+      { name:'2號箱', size:'70×50×58', volKg:34 },
+      { name:'3號箱', size:'60×45×53', volKg:24 },
+      { name:'4號箱', size:'60×40×43', volKg:17 },
+      { name:'5號箱', size:'50×35×36', volKg:11 },
+      { name:'6號箱', size:'45×33×30', volKg:7 }
+    ],
+    note:'一律依材積重量計算',
+    rules:'帶電商品無法寄送'
+  },
+  sea: {
+    label:'海運', icon:'🚢',
+    cats:[
+      { name:'一般貨物',
+        under5:{ firstNTD:0, nextNTD:0, firstKRW:0, nextKRW:0 },
+        over5:{ perNTD:0, perKRW:0 }
+      }
+    ],
+    boxFee:{ ntd:0, krw:0 },
+    boxes:[],
+    note:'尚未開放',
+    rules:''
+  }
 };
-// 試算運費（含 VIP 折扣）
-function calcShipCost(method, weightKg, grade, ratesOverride) {
+
+// 試算運費（首重/續重邏輯 + VIP 折扣）
+function calcShipCost(method, weightKg, grade, catIdx, ratesOverride) {
   var rates = ratesOverride || DEFAULT_SHIP_RATES;
   var r = rates[method];
-  if(!r || !r.tiers || r.tiers.length===0) return {base:0,discount:0,final:0,tierLabel:''};
-  var tier = r.tiers.find(function(t){return weightKg>=t.min && weightKg<t.max;}) || r.tiers[r.tiers.length-1];
-  var base = Math.round(tier.price * weightKg);
-  if(r.minCharge && base < r.minCharge) base = r.minCharge;
+  if(!r || !r.cats || r.cats.length===0) return null;
+  var cat = r.cats[catIdx||0] || r.cats[0];
+  var kg = Math.ceil(weightKg*10)/10; // 無條件進位到0.1
+  if(kg<=0) return null;
   var gi = getGradeInfo(grade||'一般');
-  var discountTotal = Math.round(gi.discount * weightKg);
-  var finalCost = Math.max(0, base - discountTotal);
-  return {base:base, discount:discountTotal, final:finalCost, tierPrice:tier.price, tierLabel:tier.min+'~'+(tier.max>=9999?'∞':tier.max)+'kg', gradeDiscount:gi.discount, method:r.label};
+
+  var baseNTD=0, baseKRW=0;
+  if(kg<5) {
+    // 首重 + 續重 × (kg-1)
+    var extra = Math.max(0, Math.ceil(kg)-1);
+    baseNTD = (cat.under5.firstNTD||0) + extra*(cat.under5.nextNTD||0);
+    baseKRW = (cat.under5.firstKRW||0) + extra*(cat.under5.nextKRW||0);
+  } else {
+    // 5kg以上：每公斤
+    baseNTD = Math.round((cat.over5.perNTD||0) * kg);
+    baseKRW = Math.round((cat.over5.perKRW||0) * kg);
+  }
+
+  // VIP 折扣只套用 NT$
+  var discNTD = Math.round(gi.discount * kg);
+  var finalNTD = Math.max(0, baseNTD - discNTD);
+
+  return {
+    method:r.label, cat:cat.name, weightKg:kg,
+    ntd:{ base:baseNTD, discount:discNTD, final:finalNTD },
+    krw:{ base:baseKRW, final:baseKRW },
+    gradeDiscount:gi.discount,
+    isUnder5: kg<5,
+    pricing: kg<5
+      ? {firstNTD:cat.under5.firstNTD, nextNTD:cat.under5.nextNTD, firstKRW:cat.under5.firstKRW, nextKRW:cat.under5.nextKRW}
+      : {perNTD:cat.over5.perNTD, perKRW:cat.over5.perKRW}
+  };
 }
 
 function useIsMobile() {
@@ -626,10 +696,15 @@ function KshipApp() {
       if(data && data.length>0 && data[0].description) {
         var parsed = JSON.parse(data[0].description);
         if(parsed && typeof parsed==='object' && (parsed.transit||parsed.direct||parsed.sea)) {
-          // merge with defaults to ensure all fields exist
-          var merged = {...DEFAULT_SHIP_RATES};
+          var merged = JSON.parse(JSON.stringify(DEFAULT_SHIP_RATES));
           ['transit','direct','sea'].forEach(function(k){
-            if(parsed[k]) merged[k] = {...DEFAULT_SHIP_RATES[k], ...parsed[k]};
+            if(!parsed[k]) return;
+            var src = parsed[k];
+            if(src.cats) merged[k].cats = src.cats;
+            if(src.boxFee) merged[k].boxFee = src.boxFee;
+            if(src.boxes) merged[k].boxes = src.boxes;
+            if(src.note!=null) merged[k].note = src.note;
+            if(src.rules!=null) merged[k].rules = src.rules;
           });
           setShipRates(merged);
           shipRatesRef.current = merged;
@@ -2923,152 +2998,202 @@ function KshipApp() {
             {/* ═══ 運費設定 ═══ */}
             {tab === "set-shipping" && (
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
-                {/* 總覽標頭 */}
                 <div style={{background:"linear-gradient(135deg,#34537d 0%,#4a6d9e 100%)",borderRadius:10,padding:"18px 20px",color:"#fff"}}>
-                  <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>🚚 運費設定</div>
-                  <div style={{fontSize:12,opacity:.85}}>設定轉機、直飛、海運的每公斤單價，會員等級折扣會自動套用</div>
+                  <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>🚚 台灣空運服務運費設定</div>
+                  <div style={{fontSize:12,opacity:.85}}>首重/續重計價 · 雙幣值（🇹🇼 NT$ / 🇰🇷 ₩）· VIP 折扣自動套用台幣</div>
                 </div>
 
-                {/* 三種運送方式卡片 */}
-                {['transit','direct','sea'].map(function(mk){
+                {/* 轉機 & 直飛 卡片 */}
+                {['transit','direct'].map(function(mk){
                   var m = shipRates[mk];
-                  var def = DEFAULT_SHIP_RATES[mk];
                   return (
                     <div key={mk} style={{background:"#fff",borderRadius:10,border:"1px solid #dce3ed",overflow:"hidden"}}>
-                      <div style={{background:mk==='transit'?'#e8edf4':mk==='direct'?'#ddf0e0':'#dce8f4',padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                      <div style={{background:mk==='transit'?'#e8edf4':'#ddf0e0',padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
                         <div style={{display:"flex",alignItems:"center",gap:8}}>
-                          <span style={{fontSize:22}}>{m.icon}</span>
+                          <span style={{fontSize:20}}>{m.icon}</span>
                           <div>
-                            <div style={{fontSize:15,fontWeight:700,color:"#1e2a3a"}}>{m.label}</div>
+                            <div style={{fontSize:15,fontWeight:700,color:"#1e2a3a"}}>{m.label}服務</div>
                             <div style={{fontSize:11,color:"#8a9ab0"}}>{m.note}</div>
                           </div>
                         </div>
+                        {m.rules && <span style={{fontSize:11,color:m.rules.includes('無法')?"#c0504d":"#5b9e6f",fontWeight:600,background:m.rules.includes('無法')?"#fde8e8":"#e8f5e9",padding:"3px 10px",borderRadius:4}}>{m.rules}</span>}
                       </div>
                       <div style={{padding:"16px 18px"}}>
-                        <div style={{fontSize:12,fontWeight:600,color:"#34537d",marginBottom:10}}>重量區間單價（NT$/kg）</div>
-                        <div style={{overflowX:"auto"}}>
-                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:400}}>
-                            <thead>
-                              <tr style={{background:"#f8fafc"}}>
-                                <th style={{padding:"8px 10px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>重量區間</th>
-                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>單價 NT$/kg</th>
-                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>VIP 折後</th>
-                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>VVIP 折後</th>
-                                <th style={{padding:"8px 10px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>SVIP 折後</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {m.tiers.map(function(t,ti){
-                                return (
-                                  <tr key={ti} style={{borderBottom:"1px solid #f0f2f5"}}>
-                                    <td style={{padding:"8px 10px",fontWeight:500}}>{t.min} ~ {t.max>=9999?'∞':t.max} kg</td>
-                                    <td style={{padding:"6px 10px",textAlign:"center"}}>
-                                      <input
-                                        id={"ship-"+mk+"-"+ti}
-                                        defaultValue={t.price}
-                                        type="number"
-                                        style={{width:70,textAlign:"center",border:"1.5px solid #dce3ed",borderRadius:6,padding:"6px 8px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit"}}
-                                        onFocus={function(e){e.target.style.borderColor='#34537d';}}
-                                        onBlur={function(e){e.target.style.borderColor='#dce3ed';}}
-                                      />
-                                    </td>
-                                    <td style={{padding:"8px 10px",textAlign:"center",color:"#c4953a",fontWeight:600}}>{Math.max(0,t.price-5)}</td>
-                                    <td style={{padding:"8px 10px",textAlign:"center",color:"#b8860b",fontWeight:600}}>{Math.max(0,t.price-10)}</td>
-                                    <td style={{padding:"8px 10px",textAlign:"center",color:"#7b2d8e",fontWeight:600}}>{Math.max(0,t.price-15)}</td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                        <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr",gap:10,marginTop:12}}>
-                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                            <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>最低收費（NT$）</span>
-                            <input id={"ship-"+mk+"-min"} defaultValue={m.minCharge||0} type="number" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                        {/* 各貨物分類費率 */}
+                        {m.cats.map(function(cat,ci){
+                          var pfx = mk+'-'+ci;
+                          return (
+                            <div key={ci} style={{marginBottom:ci<m.cats.length-1?16:0}}>
+                              <div style={{fontSize:13,fontWeight:700,color:"#34537d",marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+                                <span style={{background:"#34537d",color:"#fff",fontSize:11,padding:"2px 8px",borderRadius:4}}>{cat.name}</span>
+                              </div>
+                              <div style={{overflowX:"auto"}}>
+                                <table style={{width:"100%",borderCollapse:"collapse",fontSize:13,minWidth:460}}>
+                                  <thead>
+                                    <tr style={{background:"#f8fafc"}}>
+                                      <th style={{padding:"7px 8px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>重量區間</th>
+                                      <th style={{padding:"7px 8px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>計費方式</th>
+                                      <th style={{padding:"7px 8px",textAlign:"center",fontSize:11,color:"#5b9e6f",borderBottom:"1px solid #dce3ed"}}>🇹🇼 NT$</th>
+                                      <th style={{padding:"7px 8px",textAlign:"center",fontSize:11,color:"#5b8fb9",borderBottom:"1px solid #dce3ed"}}>🇰🇷 ₩</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {/* 1-5kg 首重 */}
+                                    <tr style={{borderBottom:"1px solid #f0f2f5"}}>
+                                      <td rowSpan={2} style={{padding:"8px",fontWeight:500,verticalAlign:"middle",borderRight:"1px solid #f0f2f5"}}>1-5 公斤</td>
+                                      <td style={{padding:"8px",color:"#4a5568"}}>首重（第1kg）</td>
+                                      <td style={{padding:"4px 6px",textAlign:"center"}}><input id={pfx+"-f-ntd"} defaultValue={cat.under5.firstNTD} type="number" style={{width:65,textAlign:"center",border:"1.5px solid #5b9e6f60",borderRadius:6,padding:"5px 4px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit",background:"#f0faf2"}} /></td>
+                                      <td style={{padding:"4px 6px",textAlign:"center"}}><input id={pfx+"-f-krw"} defaultValue={cat.under5.firstKRW} type="number" style={{width:75,textAlign:"center",border:"1.5px solid #5b8fb960",borderRadius:6,padding:"5px 4px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit",background:"#eef4fa"}} /></td>
+                                    </tr>
+                                    {/* 1-5kg 續重 */}
+                                    <tr style={{borderBottom:"1px solid #dce3ed"}}>
+                                      <td style={{padding:"8px",color:"#4a5568"}}>續重（每多1kg）</td>
+                                      <td style={{padding:"4px 6px",textAlign:"center"}}><input id={pfx+"-n-ntd"} defaultValue={cat.under5.nextNTD} type="number" style={{width:65,textAlign:"center",border:"1.5px solid #5b9e6f60",borderRadius:6,padding:"5px 4px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit",background:"#f0faf2"}} /></td>
+                                      <td style={{padding:"4px 6px",textAlign:"center"}}><input id={pfx+"-n-krw"} defaultValue={cat.under5.nextKRW} type="number" style={{width:75,textAlign:"center",border:"1.5px solid #5b8fb960",borderRadius:6,padding:"5px 4px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit",background:"#eef4fa"}} /></td>
+                                    </tr>
+                                    {/* 5kg以上 */}
+                                    <tr style={{borderBottom:"1px solid #f0f2f5"}}>
+                                      <td style={{padding:"8px",fontWeight:500}}>5 公斤以上</td>
+                                      <td style={{padding:"8px",color:"#4a5568"}}>每公斤</td>
+                                      <td style={{padding:"4px 6px",textAlign:"center"}}><input id={pfx+"-o-ntd"} defaultValue={cat.over5.perNTD} type="number" style={{width:65,textAlign:"center",border:"1.5px solid #5b9e6f60",borderRadius:6,padding:"5px 4px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit",background:"#f0faf2"}} /></td>
+                                      <td style={{padding:"4px 6px",textAlign:"center"}}><input id={pfx+"-o-krw"} defaultValue={cat.over5.perKRW} type="number" style={{width:75,textAlign:"center",border:"1.5px solid #5b8fb960",borderRadius:6,padding:"5px 4px",fontSize:14,fontWeight:700,outline:"none",fontFamily:"inherit",background:"#eef4fa"}} /></td>
+                                    </tr>
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* 紙箱費 */}
+                        <div style={{display:"flex",gap:10,marginTop:14,alignItems:"flex-end",flexWrap:"wrap"}}>
+                          <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                            <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>📦 紙箱費 NT$</span>
+                            <input id={mk+"-boxNTD"} defaultValue={m.boxFee.ntd} type="number" style={{width:70,padding:"7px 8px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontWeight:700,fontFamily:"inherit",outline:"none",textAlign:"center",background:"#f0faf2"}} />
                           </div>
-                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                            <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>備註說明</span>
-                            <input id={"ship-"+mk+"-note"} defaultValue={m.note||''} style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                          <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                            <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>📦 紙箱費 ₩</span>
+                            <input id={mk+"-boxKRW"} defaultValue={m.boxFee.krw} type="number" style={{width:80,padding:"7px 8px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontWeight:700,fontFamily:"inherit",outline:"none",textAlign:"center",background:"#eef4fa"}} />
                           </div>
                         </div>
+
+                        {/* 箱子規格 */}
+                        {m.boxes.length>0 && (
+                        <div style={{marginTop:14}}>
+                          <div style={{fontSize:12,fontWeight:600,color:"#34537d",marginBottom:6}}>📐 箱子尺寸 / 材積重量{mk==='transit'?' / 最低計費':''}</div>
+                          <div style={{overflowX:"auto"}}>
+                            <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                              <thead><tr style={{background:"#f8fafc"}}>
+                                <th style={{padding:"6px 8px",textAlign:"left",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>箱號</th>
+                                <th style={{padding:"6px 8px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>尺寸（cm）</th>
+                                <th style={{padding:"6px 8px",textAlign:"center",fontSize:11,color:"#8a9ab0",borderBottom:"1px solid #dce3ed"}}>材積重量</th>
+                                {mk==='transit' && <th style={{padding:"6px 8px",textAlign:"center",fontSize:11,color:"#c0504d",borderBottom:"1px solid #dce3ed"}}>最低計費</th>}
+                              </tr></thead>
+                              <tbody>{m.boxes.map(function(b,bi){return(
+                                <tr key={bi} style={{borderBottom:"1px solid #f0f2f5"}}>
+                                  <td style={{padding:"6px 8px",fontWeight:600}}>{b.name}</td>
+                                  <td style={{padding:"6px 8px",textAlign:"center",color:"#4a5568"}}>{b.size}</td>
+                                  <td style={{padding:"6px 8px",textAlign:"center",fontWeight:600}}>{b.volKg} KG</td>
+                                  {mk==='transit' && <td style={{padding:"6px 8px",textAlign:"center",fontWeight:700,color:"#c0504d"}}>{b.minKg?b.minKg+' KG':'—'}</td>}
+                                </tr>);})}</tbody>
+                            </table>
+                          </div>
+                          {mk==='transit' && <div style={{fontSize:11,color:"#c4953a",marginTop:6}}>★ 3號箱以下一律依實際重量計算（不套用最低計費重量）</div>}
+                          {mk==='direct' && <div style={{fontSize:11,color:"#34537d",marginTop:6}}>★ 直飛一律依材積重量計算，材積公式：長×寬×高 ÷ 6000 = 材積重量(KG)</div>}
+                        </div>
+                        )}
                       </div>
                     </div>
                   );
                 })}
 
-                {/* VIP 折扣對照 */}
-                <div style={{background:"#fff",borderRadius:10,padding:18,border:"1px solid #dce3ed"}}>
-                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 12px",color:"#34537d"}}>🏷️ 會員等級折扣對照</h3>
-                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"repeat(4,1fr)",gap:10}}>
+                {/* VIP 折扣 */}
+                <div style={{background:"#fff",borderRadius:10,padding:16,border:"1px solid #dce3ed"}}>
+                  <h3 style={{fontSize:13,fontWeight:700,margin:"0 0 4px",color:"#34537d"}}>🏷️ 會員等級折扣（僅套用 🇹🇼 NT$）</h3>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginTop:8}}>
                     {GRADES.map(function(g,gi){return(
-                      <div key={gi} style={{background:g.bg,borderRadius:8,padding:"12px 10px",textAlign:"center",border:"1px solid "+g.c+"30"}}>
-                        <div style={{fontSize:16,marginBottom:2}}>{g.icon||'👤'}</div>
-                        <div style={{fontSize:13,fontWeight:700,color:g.c}}>{g.k}</div>
-                        <div style={{fontSize:18,fontWeight:800,color:gi===0?"#8a9ab0":"#5b9e6f",marginTop:4}}>{gi===0?'—':'-NT$'+g.discount+'/kg'}</div>
+                      <div key={gi} style={{background:g.bg,borderRadius:6,padding:"10px 6px",textAlign:"center",border:"1px solid "+g.c+"25"}}>
+                        <div style={{fontSize:14}}>{g.icon||'👤'}</div>
+                        <div style={{fontSize:12,fontWeight:700,color:g.c}}>{g.k}</div>
+                        <div style={{fontSize:16,fontWeight:800,color:gi===0?"#8a9ab0":"#5b9e6f",marginTop:2}}>{gi===0?'—':'-$'+g.discount+'/kg'}</div>
                       </div>
                     );})}
                   </div>
                 </div>
 
-                {/* 運費試算器 */}
-                <div style={{background:"#fff",borderRadius:10,padding:18,border:"2px solid #34537d30"}}>
-                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 14px",color:"#34537d"}}>🧮 運費試算器</h3>
-                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10,marginBottom:14}}>
-                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>運送方式</span>
-                      <select id="sim-method" defaultValue="transit" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}}>
-                        <option value="transit">🔄 轉機</option>
-                        <option value="direct">✈️ 直飛</option>
-                        <option value="sea">🚢 海運</option>
+                {/* 試算器 */}
+                <div style={{background:"#fff",borderRadius:10,padding:16,border:"2px solid #34537d30"}}>
+                  <h3 style={{fontSize:14,fontWeight:700,margin:"0 0 12px",color:"#34537d"}}>🧮 運費試算器</h3>
+                  <div style={{display:"grid",gridTemplateColumns:mobile?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <span style={{fontSize:11,color:"#7a8a9e"}}>運送方式</span>
+                      <select id="sim-method" defaultValue="transit" style={{padding:"8px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:13,fontFamily:"inherit",background:"#fff"}}>
+                        <option value="transit">🔄 轉機</option><option value="direct">✈️ 直飛</option>
                       </select>
                     </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>重量（kg）</span>
-                      <input id="sim-weight" type="number" defaultValue="10" placeholder="10" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",outline:"none",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}} />
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <span style={{fontSize:11,color:"#7a8a9e"}}>貨物類型</span>
+                      <select id="sim-cat" defaultValue="0" style={{padding:"8px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:13,fontFamily:"inherit",background:"#fff"}}>
+                        <option value="0">不分貨</option><option value="1">純衣服（轉機）</option>
+                      </select>
                     </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                      <span style={{fontSize:11,color:"#7a8a9e",fontWeight:500}}>會員等級</span>
-                      <select id="sim-grade" defaultValue="一般" style={{padding:"9px 11px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:14,fontFamily:"inherit",background:"#fff",color:"#1e2a3a",width:"100%",boxSizing:"border-box"}}>
-                        {GRADES.map(function(g,gi){return <option key={gi} value={g.k}>{g.icon}{g.icon?' ':''}{g.k}</option>;})}
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <span style={{fontSize:11,color:"#7a8a9e"}}>重量（kg）</span>
+                      <input id="sim-weight" type="number" defaultValue="3" style={{padding:"8px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:13,fontFamily:"inherit",outline:"none"}} />
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <span style={{fontSize:11,color:"#7a8a9e"}}>會員等級</span>
+                      <select id="sim-grade" defaultValue="一般" style={{padding:"8px",border:"1px solid #d0d8e4",borderRadius:6,fontSize:13,fontFamily:"inherit",background:"#fff"}}>
+                        {GRADES.map(function(g,gi){return <option key={gi} value={g.k}>{g.icon} {g.k}</option>;})}
                       </select>
                     </div>
                   </div>
                   <button onClick={function(){
                     var method=document.getElementById('sim-method').value;
+                    var catIdx=parseInt(document.getElementById('sim-cat').value)||0;
                     var weight=parseFloat(document.getElementById('sim-weight').value)||0;
                     var grade=document.getElementById('sim-grade').value;
-                    var result=calcShipCost(method, weight, grade, shipRatesRef.current);
+                    var r=calcShipCost(method,weight,grade,catIdx,shipRatesRef.current);
                     var box=document.getElementById('sim-result');
-                    if(box) box.innerHTML=
-                      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">'+
-                      '<div style="color:#8a9ab0">運送方式</div><div style="font-weight:600">'+result.method+'</div>'+
-                      '<div style="color:#8a9ab0">重量</div><div style="font-weight:600">'+weight+' kg</div>'+
-                      '<div style="color:#8a9ab0">適用區間</div><div style="font-weight:600">'+result.tierLabel+' → NT$'+result.tierPrice+'/kg</div>'+
-                      '<div style="color:#8a9ab0">原價</div><div style="font-weight:700;font-size:15px">NT$ '+(result.base).toLocaleString()+'</div>'+
-                      (result.discount>0?'<div style="color:#c4953a">會員折扣</div><div style="font-weight:700;color:#c4953a;font-size:15px">- NT$ '+(result.discount).toLocaleString()+' <span style="font-size:11px;font-weight:400">('+result.gradeDiscount+'/kg × '+weight+'kg)</span></div>':'')+
-                      '<div style="color:#34537d;font-size:14px;font-weight:700;border-top:2px solid #34537d;padding-top:8px;grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span>應收金額</span><span style="font-size:22px;color:#34537d">NT$ '+(result.final).toLocaleString()+'</span></div>'+
-                      '</div>';
-                  }} style={{...btnP,width:"100%",padding:"10px",fontSize:14,borderRadius:8,marginBottom:12}}>💰 試算運費</button>
-                  <div id="sim-result" style={{background:"#f5f8fc",borderRadius:8,padding:16,minHeight:40}}>
-                    <div style={{textAlign:"center",color:"#8a9ab0",fontSize:13}}>輸入重量後按「試算運費」查看結果</div>
+                    if(!box||!r) return;
+                    var h='<div style="font-size:13px;line-height:1.8">';
+                    h+='<div style="display:flex;justify-content:space-between"><span style="color:#8a9ab0">'+r.method+' · '+r.cat+'</span><span style="font-weight:600">'+r.weightKg+' kg</span></div>';
+                    if(r.isUnder5) h+='<div style="color:#8a9ab0;font-size:11px">首重 '+r.pricing.firstNTD+' + 續重 '+r.pricing.nextNTD+' × '+(Math.ceil(r.weightKg)-1)+'kg</div>';
+                    else h+='<div style="color:#8a9ab0;font-size:11px">每公斤 '+r.pricing.perNTD+' × '+r.weightKg+'kg</div>';
+                    h+='<div style="border-top:1px solid #e4e9f0;margin:6px 0"></div>';
+                    h+='<div style="display:flex;justify-content:space-between"><span>🇹🇼 台幣原價</span><span style="font-weight:700">NT$ '+r.ntd.base.toLocaleString()+'</span></div>';
+                    if(r.ntd.discount>0) h+='<div style="display:flex;justify-content:space-between;color:#c4953a"><span>會員折扣（-$'+r.gradeDiscount+'/kg）</span><span style="font-weight:700">- NT$ '+r.ntd.discount.toLocaleString()+'</span></div>';
+                    h+='<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:#5b9e6f;padding:4px 0"><span>🇹🇼 應收</span><span>NT$ '+r.ntd.final.toLocaleString()+'</span></div>';
+                    h+='<div style="border-top:1px solid #e4e9f0;margin:4px 0"></div>';
+                    if(r.isUnder5) h+='<div style="color:#8a9ab0;font-size:11px">首重 ₩'+r.pricing.firstKRW.toLocaleString()+' + 續重 ₩'+r.pricing.nextKRW.toLocaleString()+' × '+(Math.ceil(r.weightKg)-1)+'kg</div>';
+                    else h+='<div style="color:#8a9ab0;font-size:11px">每公斤 ₩'+r.pricing.perKRW.toLocaleString()+' × '+r.weightKg+'kg</div>';
+                    h+='<div style="display:flex;justify-content:space-between;font-size:18px;font-weight:800;color:#34537d;padding:4px 0"><span>🇰🇷 應收</span><span>₩ '+r.krw.final.toLocaleString()+'</span></div>';
+                    h+='</div>';
+                    box.innerHTML=h;
+                  }} style={{...btnP,width:"100%",padding:"10px",fontSize:14,borderRadius:8,marginBottom:10}}>💰 試算運費</button>
+                  <div id="sim-result" style={{background:"#f5f8fc",borderRadius:8,padding:14,minHeight:40}}>
+                    <div style={{textAlign:"center",color:"#8a9ab0",fontSize:12}}>輸入重量後按試算查看雙幣值結果</div>
                   </div>
                 </div>
 
-                {/* 儲存按鈕 */}
+                {/* 儲存 */}
                 <button onClick={function(){
-                  var newRates = JSON.parse(JSON.stringify(shipRatesRef.current));
-                  ['transit','direct','sea'].forEach(function(mk){
-                    newRates[mk].tiers.forEach(function(t,ti){
-                      var el=document.getElementById('ship-'+mk+'-'+ti);
-                      if(el) t.price=parseFloat(el.value)||0;
+                  var nr=JSON.parse(JSON.stringify(shipRatesRef.current));
+                  ['transit','direct'].forEach(function(mk){
+                    nr[mk].cats.forEach(function(cat,ci){
+                      var p=mk+'-'+ci;
+                      var e=function(id){var el=document.getElementById(id);return el?parseFloat(el.value)||0:0;};
+                      cat.under5.firstNTD=e(p+'-f-ntd'); cat.under5.nextNTD=e(p+'-n-ntd');
+                      cat.under5.firstKRW=e(p+'-f-krw'); cat.under5.nextKRW=e(p+'-n-krw');
+                      cat.over5.perNTD=e(p+'-o-ntd'); cat.over5.perKRW=e(p+'-o-krw');
                     });
-                    var minEl=document.getElementById('ship-'+mk+'-min');
-                    if(minEl) newRates[mk].minCharge=parseFloat(minEl.value)||0;
-                    var noteEl=document.getElementById('ship-'+mk+'-note');
-                    if(noteEl) newRates[mk].note=noteEl.value;
+                    var bN=document.getElementById(mk+'-boxNTD');
+                    var bK=document.getElementById(mk+'-boxKRW');
+                    if(bN) nr[mk].boxFee.ntd=parseFloat(bN.value)||0;
+                    if(bK) nr[mk].boxFee.krw=parseFloat(bK.value)||0;
                   });
-                  saveShipRates(newRates);
-                  alert('✅ 運費設定已儲存至 Supabase\n\n🔄 轉機：'+newRates.transit.tiers.map(function(t){return t.min+'~'+(t.max>=9999?'∞':t.max)+'kg = NT$'+t.price;}).join('、')+'\n✈️ 直飛：'+newRates.direct.tiers.map(function(t){return t.min+'~'+(t.max>=9999?'∞':t.max)+'kg = NT$'+t.price;}).join('、')+'\n🚢 海運：'+newRates.sea.tiers.map(function(t){return t.min+'~'+(t.max>=9999?'∞':t.max)+'kg = NT$'+t.price;}).join('、'));
+                  saveShipRates(nr);
+                  alert('✅ 運費設定已儲存至 Supabase\n\n轉機 不分貨：首重 NT$'+nr.transit.cats[0].under5.firstNTD+' / ₩'+nr.transit.cats[0].under5.firstKRW+'\n轉機 純衣服：首重 NT$'+(nr.transit.cats[1]?nr.transit.cats[1].under5.firstNTD:'—')+'\n直飛 不分貨：首重 NT$'+nr.direct.cats[0].under5.firstNTD+' / ₩'+nr.direct.cats[0].under5.firstKRW);
                 }} style={{...btnP,padding:"14px",fontSize:15,width:"100%",borderRadius:10,background:"linear-gradient(135deg,#34537d,#4a6d9e)",color:"#fff",letterSpacing:1}}>💾 儲存運費設定至 Supabase</button>
               </div>
             )}
