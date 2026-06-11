@@ -436,11 +436,15 @@ function KshipApp() {
       var {data:pU} = await sb.from('packages').select('id').eq('status','unclaimed');
       var unclaimed = pU?.length||0;
 
-      // 今日出貨 + 待出貨
-      var {data:tShipped} = await sb.from('tasks').select('id').or('task_type.eq.ship,type.eq.ship').in('status',['completed','paid']).gte('created_at', startISO).lt('created_at', endISO);
-      var shipped = tShipped?.length||0;
-      var {data:tPending} = await sb.from('tasks').select('id').or('task_type.eq.ship,type.eq.ship').eq('status','pending');
-      var pendingShip = tPending?.length||0;
+      // 今日出貨 + 待出貨（一次查詢，JS 篩選）
+      var {data:allTasks} = await sb.from('tasks').select('id,task_type,type,status,created_at,ship_cost');
+      allTasks = (allTasks||[]).filter(function(t){ return t.task_type==='ship'||t.type==='ship'; });
+      var shipped = allTasks.filter(function(t){
+        if(t.status!=='completed' && t.status!=='paid') return false;
+        var ts = t.created_at ? new Date(t.created_at).getTime() : 0;
+        return ts >= range.startMs && ts < range.endMs;
+      }).length;
+      var pendingShip = allTasks.filter(function(t){ return t.status==='pending'; }).length;
 
       setDailyStats({ inbound, shipped, pendingShip, unclaimed });
       var k=toKST();
@@ -1133,11 +1137,13 @@ function KshipApp() {
       allPkgPerf = allPkgPerf||[];
 
       var perfMap = {};
+      var unknownToday = 0, unknownMonth = 0;
 
       // 今日入庫（KST 今日範圍，scanned_at 優先）
       allPkgPerf.forEach(function(p){
         if(!pkgInRange(p, range.startMs, range.endMs)) return;
-        var n = p.processed_by_name||'未知';
+        if(!p.processed_by_name) { unknownToday++; return; }
+        var n = p.processed_by_name;
         if(!perfMap[n]) perfMap[n]={name:n,today:0,month:0};
         perfMap[n].today++;
       });
@@ -1148,12 +1154,15 @@ function KshipApp() {
         if(!ts) return;
         var t = new Date(ts).getTime();
         if(isNaN(t) || t < monthStartMs || t >= monthEndMs) return;
-        var n = p.processed_by_name||'未知';
+        if(!p.processed_by_name) { unknownMonth++; return; }
+        var n = p.processed_by_name;
         if(!perfMap[n]) perfMap[n]={name:n,today:0,month:0};
         perfMap[n].month++;
       });
 
       var perfList = Object.values(perfMap).sort(function(a,b){return (b.month||0)-(a.month||0);});
+      perfList._unknownToday = unknownToday;
+      perfList._unknownMonth = unknownMonth;
       setEmpPerf(perfList);
 
       // 最近入庫活動（前10筆）
@@ -1458,6 +1467,11 @@ function KshipApp() {
                 <span style={{ fontSize: 11, color: "#5b9e6f" }}>今日 {r.today||0}</span>
               </div>
             ))}
+            {(empPerf._unknownMonth>0||empPerf._unknownToday>0) && (
+              <div style={{marginTop:8,padding:"6px 10px",background:"#fdf5e6",borderRadius:6,fontSize:11,color:"#8b6914",display:"flex",alignItems:"center",gap:4}}>
+                ⚠️ 另有 {empPerf._unknownMonth||0} 件本月包裹未記錄處理人員{empPerf._unknownToday>0?'（今日 '+empPerf._unknownToday+' 件）':''}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1653,9 +1667,10 @@ function KshipApp() {
                         <tbody>
                           {inboundDetail.map((p,i)=>{
                             var t=p.scanned_at?new Date(p.scanned_at).toLocaleTimeString("zh-TW",{hour:"2-digit",minute:"2-digit"}):"—";
+                            var custNote=(custList.find(function(c){return c.code===p.member_code;})||{}).note||'';
                             return(<tr key={i} style={{borderBottom:"1px solid #f0f2f5"}}>
                               <td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:12}}>{(p.tracking_no||"").substring(0,18)}</td>
-                              <td style={{padding:"8px 12px",fontWeight:500}}>{p.member_code||"—"}</td>
+                              <td style={{padding:"8px 12px"}}><div style={{fontWeight:500}}>{p.member_code||"—"}</div>{custNote&&<div style={{fontSize:10,color:"#c4953a",marginTop:1}}>📝 {custNote}</div>}</td>
                               <td style={{padding:"8px 12px"}}>{p.weight_kg||0} kg</td>
                               <td style={{padding:"8px 12px"}}><span style={{background:"#e8edf4",padding:"2px 8px",borderRadius:4,fontSize:12,fontWeight:600}}>{p.shelf||"—"}</span></td>
                               <td style={{padding:"8px 12px",color:"#4a5568"}}>{p.processed_by_name||"—"}</td>
@@ -1878,11 +1893,14 @@ function KshipApp() {
                   </div>
                   {fin.shipList.length === 0 ? (
                     <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>暫無出貨紀錄</div>
-                  ) : fin.shipList.map(function(r,i){return (
+                  ) : fin.shipList.map(function(r,i){
+                    var custNote = (custList.find(function(c){return c.code===r.memberCode;})||{}).note||'';
+                    return (
                     <div key={r.id||i} style={{padding:"14px 16px",borderBottom:"1px solid #f0f2f5",display:"flex",flexWrap:"wrap",gap:8,alignItems:"center"}}>
                       <div style={{flex:"1 1 140px",minWidth:120}}>
                         <div style={{fontWeight:600,fontSize:14}}>{r.memberCode}</div>
                         <div style={{fontSize:11,color:"#8a9ab0"}}>{r.date}</div>
+                        {custNote && <div style={{fontSize:11,color:"#c4953a",marginTop:2,display:"flex",alignItems:"center",gap:3}}>📝 {custNote}</div>}
                       </div>
                       <div style={{flex:"0 0 auto",textAlign:"right",minWidth:80}}>
                         <div style={{fontWeight:700,fontSize:15,color:"#34537d"}}>{w(r.cost)}</div>
@@ -2251,7 +2269,7 @@ function KshipApp() {
                       {filteredCust.length===0 ? <tr><td colSpan={6} style={{padding:20,textAlign:"center",color:"#8a9ab0"}}>無符合的客戶</td></tr> :
                       filteredCust.slice(0,30).map((r,i)=>(
                         <tr key={i} style={{borderBottom:"1px solid #f0f2f5",cursor:"pointer"}} onClick={()=>selectCustomer(r)}>
-                          <td style={{padding:8,color:"#8a9ab0"}}>{r.code}</td><td style={{padding:8,fontWeight:600}}>{r.name}</td><td style={{padding:8,fontSize:12,color:"#8a9ab0"}}>{r.phone}</td>
+                          <td style={{padding:8,color:"#8a9ab0"}}>{r.code}</td><td style={{padding:8,fontWeight:600}}>{r.name}{r.note?<span title={r.note} style={{marginLeft:4,fontSize:11,cursor:"help"}}>📝</span>:''}</td><td style={{padding:8,fontSize:12,color:"#8a9ab0"}}>{r.phone}</td>
                           <td style={{padding:8}}>{(()=>{var gi=getGradeInfo(r.grade);return <span style={{display:"inline-flex",alignItems:"center",gap:3}}><span style={{fontSize:11,fontWeight:600,color:gi.c,background:gi.bg,padding:"2px 8px",borderRadius:4}}>{gi.icon}{gi.icon?' ':''}{r.grade}</span>{r.isManual&&<span style={{fontSize:9,fontWeight:600,color:"#fff",background:"#c4953a",padding:"1px 4px",borderRadius:3}}>手動</span>}</span>})()}</td>
                           <td style={{padding:8,fontWeight:600}}>{r.pkgCount} 件</td><td style={{padding:8,color:"#8a9ab0"}}>{r.lastDate}</td></tr>))}
                     </tbody>
@@ -2278,8 +2296,38 @@ function KshipApp() {
                     </div>
                   </div>
                   <div style={{fontSize:13,lineHeight:2}}>
-                    {[{l:"電話",v:selectedCust.phone||'—'},{l:"LINE ID",v:selectedCust.line_id||'—'},{l:"地址",v:selectedCust.address||'—'},{l:"備註",v:selectedCust.note||'—'}].map((r,i)=>(
+                    {[{l:"電話",v:selectedCust.phone||'—'},{l:"LINE ID",v:selectedCust.line_id||'—'},{l:"地址",v:selectedCust.address||'—'}].map((r,i)=>(
                       <div key={i} style={{display:"flex",gap:12}}><span style={{color:"#8a9ab0",minWidth:55}}>{r.l}</span><span>{r.v}</span></div>))}
+                  </div>
+                  {/* 備註（可編輯 + 儲存）*/}
+                  <div style={{marginTop:10,padding:"12px 14px",background:"#f5f8fc",borderRadius:8,border:"1px solid #e4e9f0"}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                      <span style={{fontSize:12,fontWeight:600,color:"#34537d"}}>📝 備註（員工出貨時可見）</span>
+                    </div>
+                    <textarea
+                      id="cust-note-input"
+                      defaultValue={selectedCust.note||''}
+                      placeholder="輸入客戶備註，例如：易碎品需加強包裝、指定宅配時段、特殊寄送需求..."
+                      rows={3}
+                      style={{width:"100%",boxSizing:"border-box",padding:"10px 12px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical",lineHeight:1.6,background:"#fff",color:"#1e2a3a"}}
+                      onFocus={function(e){e.target.style.borderColor='#34537d';}}
+                      onBlur={function(e){e.target.style.borderColor='#dce3ed';}}
+                    />
+                    <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:8}}>
+                      <button onClick={async function(){
+                        var noteEl=document.getElementById('cust-note-input');
+                        if(!noteEl) return;
+                        var newNote=noteEl.value.trim();
+                        try {
+                          await sb.from('members').update({note:newNote}).eq('member_code',selectedCust.code);
+                          setSelectedCust(function(prev){return prev?{...prev,note:newNote}:prev;});
+                          setCustList(function(prev){return prev.map(function(c){return c.code===selectedCust.code?{...c,note:newNote}:c;});});
+                          alert('✅ 備註已儲存\n\n會員：'+selectedCust.name+'\n備註：'+(newNote||'（已清除）')+'\n\n員工出貨時將會看到此備註。');
+                        } catch(e){ alert('❌ 儲存失敗：'+(e.message||e)); }
+                      }} style={{padding:"8px 20px",background:"#34537d",color:"#fff",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:13}}>
+                        💾 儲存備註
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -2853,6 +2901,13 @@ function KshipApp() {
                         <span style={{color:"#5b9e6f",fontWeight:600}}>日均 {r.month ? (r.month/new Date().getDate()).toFixed(1) : 0}件</span>
                       </div>
                     </div>))}
+                  {(empPerf._unknownMonth>0||empPerf._unknownToday>0) && (
+                    <div style={{marginTop:12,padding:"10px 14px",background:"#fdf5e6",borderRadius:8,fontSize:12,color:"#8b6914"}}>
+                      <div style={{fontWeight:600,marginBottom:4}}>⚠️ 未記錄處理人員的包裹</div>
+                      <div>本月 {empPerf._unknownMonth||0} 件{empPerf._unknownToday>0?'（今日 '+empPerf._unknownToday+' 件）':''}未歸屬到任何員工</div>
+                      <div style={{marginTop:4,fontSize:11,color:"#a08630"}}>原因：入庫掃描時 processed_by_name 欄位為空。請確認掃描端系統有正確帶入員工名稱。</div>
+                    </div>
+                  )}
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:mobile?"1fr":"1fr 1fr 1fr",gap:10}}>
                   {[
