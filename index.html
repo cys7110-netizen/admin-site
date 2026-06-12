@@ -364,6 +364,10 @@ const NAV = [
     { k: "hr-visa", l: "簽證期限" },
     { k: "hr-performance", l: "績效統計" },
   ]},
+  { k: "account-mgmt", l: "帳戶相關", sub: [
+    { k: "acct-pending", l: "未核對" },
+    { k: "acct-verified", l: "已核對" },
+  ]},
   { k: "mgr-expense", l: "支出管理", sub: [
     { k: "exp-meals", l: "每日餐費" },
     { k: "exp-packing", l: "包材支出" },
@@ -461,6 +465,13 @@ function KshipApp() {
   const [showAdd, setShowAdd] = useState(false);
   const [addForm, setAddForm] = useState({ empNo: "", name: "", type: TYPES[0], visa: "", visaType: "", rate: "", msalary: "", startDate: "", resigned: false, resignDate: "" });
   const [sideOpen, setSideOpen] = useState(false);
+
+  // ═══ 帳戶相關 State ═══
+  const [pendingDeposits, setPendingDeposits] = useState([]);
+  const [verifiedDeposits, setVerifiedDeposits] = useState([]);
+  const [verifiedMonth, setVerifiedMonth] = useState(() => new Date().toISOString().slice(0,7));
+  const [walletLoading, setWalletLoading] = useState(false);
+
 
   const PASSWORDS = {
     "hanji2020/": "boss",
@@ -865,6 +876,75 @@ function KshipApp() {
 
   useEffect(function(){ if(loggedIn) { loadFinancials(); } }, [loggedIn]);
 
+  // ═══ 帳戶相關 – 載入/確認匯款 ═══
+  async function loadPendingDeposits() {
+    if(!sb) return;
+    setWalletLoading(true);
+    try {
+      var { data } = await sb.from('wallet_deposits').select('*').eq('status','pending').order('created_at',{ascending:false});
+      // 批量查會員名稱
+      var codes = [...new Set((data||[]).map(d=>d.member_code))];
+      var memberMap = {};
+      if(codes.length > 0) {
+        var { data:members } = await sb.from('members').select('member_code,name').in('member_code',codes);
+        (members||[]).forEach(m=>{ memberMap[m.member_code]=m.name; });
+      }
+      setPendingDeposits((data||[]).map(d=>({...d, memberName: memberMap[d.member_code]||'—'})));
+    } catch(e){ console.error('loadPendingDeposits error:',e); }
+    setWalletLoading(false);
+  }
+
+  async function loadVerifiedDeposits(ym) {
+    if(!sb) return;
+    setWalletLoading(true);
+    try {
+      var startDate = ym + '-01T00:00:00';
+      var y = parseInt(ym.split('-')[0]), m = parseInt(ym.split('-')[1]);
+      var endM = m===12 ? 1 : m+1; var endY = m===12 ? y+1 : y;
+      var endDate = endY+'-'+(endM<10?'0':'')+endM+'-01T00:00:00';
+      var { data } = await sb.from('wallet_deposits').select('*').eq('status','confirmed').gte('confirmed_at',startDate).lt('confirmed_at',endDate).order('confirmed_at',{ascending:false});
+      // 只保留一年內的資料
+      var oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
+      data = (data||[]).filter(d=> new Date(d.confirmed_at) >= oneYearAgo);
+      var codes = [...new Set(data.map(d=>d.member_code))];
+      var memberMap = {};
+      if(codes.length > 0) {
+        var { data:members } = await sb.from('members').select('member_code,name').in('member_code',codes);
+        (members||[]).forEach(m=>{ memberMap[m.member_code]=m.name; });
+      }
+      setVerifiedDeposits(data.map(d=>({...d, memberName: memberMap[d.member_code]||'—'})));
+    } catch(e){ console.error('loadVerifiedDeposits error:',e); }
+    setWalletLoading(false);
+  }
+
+  async function confirmDeposit(depositId) {
+    if(!sb || !depositId) return;
+    if(!confirm('確定標記此筆匯款為「已付款」？確認後金額將加入客人錢包。')) return;
+    try {
+      var { data: dep } = await sb.from('wallet_deposits').select('*').eq('id',depositId).single();
+      if(!dep) { alert('找不到該筆資料'); return; }
+      var now = new Date().toISOString();
+      var roleLabel = userRole==='boss'?'管理者':'主管';
+      // 1. 更新匯款狀態
+      await sb.from('wallet_deposits').update({ status:'confirmed', confirmed_at:now, confirmed_by:roleLabel }).eq('id',depositId);
+      // 2. 更新或建立錢包餘額
+      var { data: bal } = await sb.from('wallet_balances').select('*').eq('member_code',dep.member_code).single();
+      var newTWD = (bal?.balance_twd||0) + (dep.currency==='TWD' ? +dep.amount : 0);
+      var newKRW = (bal?.balance_krw||0) + (dep.currency==='KRW' ? +dep.amount : 0);
+      await sb.from('wallet_balances').upsert({ member_code:dep.member_code, balance_twd:newTWD, balance_krw:newKRW, updated_at:now },{ onConflict:'member_code' });
+      // 3. 新增交易明細
+      await sb.from('wallet_transactions').insert({ member_code:dep.member_code, type:'deposit', amount:+dep.amount, currency:dep.currency, description:'匯款儲值（後五碼：'+dep.bank_last5+'）', balance_after_twd:newTWD, balance_after_krw:newKRW });
+      alert('✅ 已確認匯款 · '+dep.member_code+' 儲值 '+dep.currency+' '+dep.amount);
+      loadPendingDeposits();
+    } catch(e){ alert('❌ 操作失敗：'+(e.message||e)); }
+  }
+
+  useEffect(function(){
+    if(loggedIn && (tab==='acct-pending')) loadPendingDeposits();
+    if(loggedIn && (tab==='acct-verified')) loadVerifiedDeposits(verifiedMonth);
+  }, [loggedIn, tab, verifiedMonth]);
+
+
   // ── 支出 CRUD → Supabase ──
   // ── 標記出貨已收款 ──
   async function markShipPaid(taskId) {
@@ -1100,6 +1180,11 @@ function KshipApp() {
         return {date:d, cost:t.ship_cost||0, days:days};
       }));
     } catch(e){ console.error('selectCustomer error:', e); }
+    // 載入錢包餘額
+    try {
+      var {data:walData} = await sb.from('wallet_balances').select('*').eq('member_code', cust.code).single();
+      setSelectedCust(function(prev){ return prev ? {...prev, walletTWD: walData?.balance_twd||0, walletKRW: walData?.balance_krw||0 } : prev; });
+    } catch(e){ /* 可能無錢包紀錄 */ }
   }
   
   async function loadInboundDetail() {
@@ -2300,6 +2385,15 @@ function KshipApp() {
                       <div key={i} style={{display:"flex",gap:12}}><span style={{color:"#8a9ab0",minWidth:55}}>{r.l}</span><span>{r.v}</span></div>))}
                   </div>
                   {/* 備註（可編輯 + 儲存）*/}
+                  {/* 💰 預付款餘額 */}
+                  <div style={{marginTop:10,padding:"12px 14px",background:"#edf7ed",borderRadius:8,border:"1px solid #c3e6c3"}}>
+                    <div style={{fontSize:12,fontWeight:600,color:"#2e7d32",marginBottom:6}}>💰 預付款餘額</div>
+                    <div style={{display:"flex",gap:16,flexWrap:"wrap"}}>
+                      <div><span style={{fontSize:11,color:"#5b9e6f"}}>台幣</span> <span style={{fontSize:16,fontWeight:700,color:"#2e7d32"}}>NT$ {(selectedCust.walletTWD||0).toLocaleString()}</span></div>
+                      <div><span style={{fontSize:11,color:"#5b9e6f"}}>韓幣</span> <span style={{fontSize:16,fontWeight:700,color:"#2e7d32"}}>₩ {(selectedCust.walletKRW||0).toLocaleString()}</span></div>
+                    </div>
+                  </div>
+                  {/* 備註區塊 */}
                   <div style={{marginTop:10,padding:"12px 14px",background:"#f5f8fc",borderRadius:8,border:"1px solid #e4e9f0"}}>
                     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
                       <span style={{fontSize:12,fontWeight:600,color:"#34537d"}}>📝 備註（員工出貨時可見）</span>
@@ -3599,6 +3693,80 @@ function KshipApp() {
                     alert('✅ 會員等級設定已儲存至 Supabase\n\n⭐ VIP：'+GRADES[1].kg+'kg（折 NT$'+GRADES[1].discount+'/kg）\n👑 VVIP：'+GRADES[2].kg+'kg（折 NT$'+GRADES[2].discount+'/kg）\n💎 SVIP：'+GRADES[3].kg+'kg（折 NT$'+GRADES[3].discount+'/kg）');
                   } catch(e){ alert('❌ 儲存失敗：'+(e.message||e)); }
                 }} style={{...btnP,padding:"14px",fontSize:15,width:"100%",borderRadius:10,background:"linear-gradient(135deg,#34537d,#4a6d9e)",color:"#fff",letterSpacing:1}}>💾 儲存等級設定至 Supabase</button>
+              </div>
+            )}
+
+            {/* ═══ 帳戶相關：未核對 ═══ */}
+            {tab === "acct-pending" && (
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>📋 待確認匯款</h3>
+                    <button onClick={loadPendingDeposits} style={{padding:"6px 14px",background:"#e8edf4",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:12,fontFamily:"inherit",color:"#34537d"}}>🔄 重新整理</button>
+                  </div>
+                  {walletLoading ? <div style={{textAlign:"center",padding:30,color:"#8a9ab0"}}>載入中...</div>
+                  : pendingDeposits.length === 0 ? <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>目前沒有待確認的匯款</div>
+                  : pendingDeposits.map(function(dep){
+                    var d = dep.created_at ? new Date(dep.created_at).toLocaleDateString('zh-TW',{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                    return (
+                      <div key={dep.id} style={{background:"#fff9f0",borderRadius:8,padding:"14px 16px",border:"1px solid #f0dab5",marginBottom:8,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                        <div style={{flex:1,minWidth:150}}>
+                          <div style={{fontWeight:700,fontSize:15,color:"#c4953a"}}>{dep.currency} {(+dep.amount).toLocaleString()}</div>
+                          <div style={{fontSize:12,color:"#34537d",fontWeight:600,marginTop:2}}>會員：{dep.memberName} ({dep.member_code})</div>
+                          <div style={{fontSize:11,color:"#8a9ab0",marginTop:2}}>後五碼：{dep.bank_last5} · 戶名：{dep.account_name}</div>
+                          <div style={{fontSize:11,color:"#8a9ab0"}}>{d}</div>
+                        </div>
+                        <div style={{display:"flex",gap:6}}>
+                          <button onClick={function(){confirmDeposit(dep.id);}} style={{padding:"8px 18px",background:"#5b9e6f",color:"#fff",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>✅ 已付款</button>
+                          <button onClick={async function(){
+                            if(!confirm('確定標記為待確認？客人暫時不會收到金額。')) return;
+                          }} style={{padding:"8px 14px",background:"#e8edf4",color:"#34537d",border:"none",borderRadius:6,fontWeight:500,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>⏳ 待確認</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ═══ 帳戶相關：已核對 ═══ */}
+            {tab === "acct-verified" && (
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>✅ 已核對匯款紀錄</h3>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <input type="month" value={verifiedMonth} onChange={function(e){setVerifiedMonth(e.target.value);}} style={{padding:"6px 10px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit",outline:"none"}} />
+                      <span style={{fontSize:11,color:"#8a9ab0"}}>（保留一年資料）</span>
+                    </div>
+                  </div>
+                  {walletLoading ? <div style={{textAlign:"center",padding:30,color:"#8a9ab0"}}>載入中...</div>
+                  : verifiedDeposits.length === 0 ? <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>此月份無已核對紀錄</div>
+                  : (<div>
+                    <div style={{display:"flex",padding:"8px 12px",background:"#f0f4fa",borderRadius:6,marginBottom:4,fontSize:11,fontWeight:600,color:"#34537d",gap:8}}>
+                      <span style={{flex:1,minWidth:80}}>會員</span>
+                      <span style={{width:100}}>金額</span>
+                      <span style={{width:80}}>後五碼</span>
+                      <span style={{width:80}}>戶名</span>
+                      <span style={{width:80}}>確認者</span>
+                      <span style={{width:120}}>確認時間</span>
+                    </div>
+                    {verifiedDeposits.map(function(dep){
+                      var d = dep.confirmed_at ? new Date(dep.confirmed_at).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                      return (
+                        <div key={dep.id} style={{display:"flex",padding:"10px 12px",background:"#fff",borderRadius:6,marginBottom:2,fontSize:12,alignItems:"center",gap:8,border:"1px solid #f0f2f5"}}>
+                          <span style={{flex:1,minWidth:80,fontWeight:600}}>{dep.memberName} ({dep.member_code})</span>
+                          <span style={{width:100,fontWeight:700,color:"#5b9e6f"}}>{dep.currency} {(+dep.amount).toLocaleString()}</span>
+                          <span style={{width:80}}>{dep.bank_last5}</span>
+                          <span style={{width:80}}>{dep.account_name}</span>
+                          <span style={{width:80,color:"#34537d"}}>{dep.confirmed_by||'—'}</span>
+                          <span style={{width:120,color:"#8a9ab0"}}>{d}</span>
+                        </div>
+                      );
+                    })}
+                    <div style={{marginTop:8,fontSize:12,color:"#8a9ab0"}}>共 {verifiedDeposits.length} 筆紀錄</div>
+                  </div>)}
+                </div>
               </div>
             )}
 
