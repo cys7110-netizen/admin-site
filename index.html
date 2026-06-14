@@ -856,7 +856,9 @@ function KshipApp() {
           logistic: t.ship_logistic||'',
           paid: !!(t.paid_at),
           paidAt: t.paid_at ? (t.paid_at+'').substring(0,10) : '',
-          payInfo: t.pay_info||''
+          payInfo: t.pay_info||'',
+          verifiedAt: t.verified_at ? (t.verified_at+'').substring(0,10) : '',
+          verifiedBy: t.verified_by||''
         };
       }).sort(function(a,b){ return b.date.localeCompare(a.date); });
 
@@ -882,15 +884,23 @@ function KshipApp() {
     if(!sb) return;
     setWalletLoading(true);
     try {
-      var { data } = await sb.from('wallet_deposits').select('*').eq('status','pending').order('created_at',{ascending:false});
-      // 批量查會員名稱
-      var codes = [...new Set((data||[]).map(d=>d.member_code))];
+      // ★ 1) 錢包儲值（pending）
+      var { data: deps } = await sb.from('wallet_deposits').select('*').eq('status','pending').order('created_at',{ascending:false});
+      // ★ 2) 服務費用（finance_records type=payment, 未核對）
+      var { data: fees } = await sb.from('finance_records').select('*').eq('type','payment').is('verified_at',null).order('created_at',{ascending:false});
+      // 合併查會員名稱
+      var allCodes = [...new Set([...(deps||[]).map(d=>d.member_code),...(fees||[]).map(f=>f.member_code)].filter(Boolean))];
       var memberMap = {};
-      if(codes.length > 0) {
-        var { data:members } = await sb.from('members').select('member_code,name').in('member_code',codes);
+      if(allCodes.length > 0) {
+        var { data:members } = await sb.from('members').select('member_code,name').in('member_code',allCodes);
         (members||[]).forEach(m=>{ memberMap[m.member_code]=m.name; });
       }
-      setPendingDeposits((data||[]).map(d=>({...d, memberName: memberMap[d.member_code]||'—'})));
+      var combined = [
+        ...(deps||[]).map(d=>({...d, _type:'deposit', memberName:memberMap[d.member_code]||'—'})),
+        ...(fees||[]).map(f=>({...f, _type:'fee', memberName:memberMap[f.member_code]||'—'}))
+      ];
+      combined.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
+      setPendingDeposits(combined);
     } catch(e){ console.error('loadPendingDeposits error:',e); }
     setWalletLoading(false);
   }
@@ -903,17 +913,25 @@ function KshipApp() {
       var y = parseInt(ym.split('-')[0]), m = parseInt(ym.split('-')[1]);
       var endM = m===12 ? 1 : m+1; var endY = m===12 ? y+1 : y;
       var endDate = endY+'-'+(endM<10?'0':'')+endM+'-01T00:00:00';
-      var { data } = await sb.from('wallet_deposits').select('*').eq('status','confirmed').gte('confirmed_at',startDate).lt('confirmed_at',endDate).order('confirmed_at',{ascending:false});
-      // 只保留一年內的資料
+      // ★ 1) 已核對儲值
+      var { data: deps } = await sb.from('wallet_deposits').select('*').eq('status','confirmed').gte('confirmed_at',startDate).lt('confirmed_at',endDate).order('confirmed_at',{ascending:false});
+      // ★ 2) 已核對服務費用
+      var { data: fees } = await sb.from('finance_records').select('*').eq('type','payment').not('verified_at','is',null).gte('verified_at',startDate).lt('verified_at',endDate).order('verified_at',{ascending:false});
       var oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
-      data = (data||[]).filter(d=> new Date(d.confirmed_at) >= oneYearAgo);
-      var codes = [...new Set(data.map(d=>d.member_code))];
+      deps = (deps||[]).filter(d=> new Date(d.confirmed_at) >= oneYearAgo);
+      fees = (fees||[]).filter(f=> new Date(f.verified_at) >= oneYearAgo);
+      var allCodes = [...new Set([...deps.map(d=>d.member_code),...fees.map(f=>f.member_code)].filter(Boolean))];
       var memberMap = {};
-      if(codes.length > 0) {
-        var { data:members } = await sb.from('members').select('member_code,name').in('member_code',codes);
+      if(allCodes.length > 0) {
+        var { data:members } = await sb.from('members').select('member_code,name').in('member_code',allCodes);
         (members||[]).forEach(m=>{ memberMap[m.member_code]=m.name; });
       }
-      setVerifiedDeposits(data.map(d=>({...d, memberName: memberMap[d.member_code]||'—'})));
+      var combined = [
+        ...deps.map(d=>({...d, _type:'deposit', memberName:memberMap[d.member_code]||'—', _verifiedAt:d.confirmed_at})),
+        ...fees.map(f=>({...f, _type:'fee', memberName:memberMap[f.member_code]||'—', _verifiedAt:f.verified_at}))
+      ];
+      combined.sort(function(a,b){ return new Date(b._verifiedAt)-new Date(a._verifiedAt); });
+      setVerifiedDeposits(combined);
     } catch(e){ console.error('loadVerifiedDeposits error:',e); }
     setWalletLoading(false);
   }
@@ -926,18 +944,41 @@ function KshipApp() {
       if(!dep) { alert('找不到該筆資料'); return; }
       var now = new Date().toISOString();
       var roleLabel = userRole==='boss'?'管理者':'主管';
-      // 1. 更新匯款狀態
       await sb.from('wallet_deposits').update({ status:'confirmed', confirmed_at:now, confirmed_by:roleLabel }).eq('id',depositId);
-      // 2. 更新或建立錢包餘額
       var { data: bal } = await sb.from('wallet_balances').select('*').eq('member_code',dep.member_code).single();
       var newTWD = (bal?.balance_twd||0) + (dep.currency==='TWD' ? +dep.amount : 0);
       var newKRW = (bal?.balance_krw||0) + (dep.currency==='KRW' ? +dep.amount : 0);
       await sb.from('wallet_balances').upsert({ member_code:dep.member_code, balance_twd:newTWD, balance_krw:newKRW, updated_at:now },{ onConflict:'member_code' });
-      // 3. 新增交易明細
       await sb.from('wallet_transactions').insert({ member_code:dep.member_code, type:'deposit', amount:+dep.amount, currency:dep.currency, description:'匯款儲值（後五碼：'+dep.bank_last5+'）', balance_after_twd:newTWD, balance_after_krw:newKRW });
       alert('✅ 已確認匯款 · '+dep.member_code+' 儲值 '+dep.currency+' '+dep.amount);
       loadPendingDeposits();
     } catch(e){ alert('❌ 操作失敗：'+(e.message||e)); }
+  }
+
+  // ★ 核對服務費用（點貨/自取/拆專/拋專）
+  async function confirmFeeRecord(recordId) {
+    if(!sb || !recordId) return;
+    if(!confirm('確定核對此筆服務費用？')) return;
+    try {
+      var now = new Date().toISOString();
+      var roleLabel = userRole==='boss'?'管理者':'主管';
+      await sb.from('finance_records').update({ verified_at:now, verified_by:roleLabel }).eq('id',recordId);
+      alert('✅ 已核對');
+      loadPendingDeposits();
+    } catch(e){ alert('❌ 操作失敗：'+(e.message||e)); }
+  }
+
+  // ★ 核對出貨運費
+  async function verifyShipPayment(taskId) {
+    if(!sb || !taskId) return;
+    if(!confirm('確定核對此筆運費？')) return;
+    try {
+      var now = new Date().toISOString();
+      var roleLabel = userRole==='boss'?'管理者':'主管';
+      await sb.from('tasks').update({ verified_at:now, verified_by:roleLabel }).eq('id',taskId);
+      alert('✅ 運費已核對');
+      loadFinancials();
+    } catch(e){ alert('❌ '+e.message); }
   }
 
   useEffect(function(){
@@ -2043,10 +2084,18 @@ function KshipApp() {
                             {r.payInfo && r.payInfo.indexOf("韓幣")>=0 && (
                               <div style={{fontSize:11,color:"#34537d",marginTop:4,fontWeight:600}}>{"🇰🇷 "+(r.payInfo.split("：")[1]||"")}</div>
                             )}
+                            {r.payInfo && r.payInfo.indexOf("錢包")>=0 && (
+                              <div style={{fontSize:11,color:"#2e7d32",marginTop:4,fontWeight:600}}>💰 錢包扣款</div>
+                            )}
                             {r.payInfo && r.payInfo.indexOf("管理端")>=0 && (
                               <div style={{fontSize:10,color:"#8a9ab0",marginTop:4}}>管理端標記</div>
                             )}
                             <div style={{fontSize:10,color:"#8a9ab0",marginTop:2}}>{r.paidAt}</div>
+                            {r.verifiedAt ? (
+                              <div style={{fontSize:10,color:"#5b9e6f",marginTop:4}}>✅ 已核對 {r.verifiedBy||''}</div>
+                            ) : (
+                              <button onClick={function(){verifyShipPayment(r.id);}} style={{marginTop:4,padding:"4px 12px",background:"#34537d",color:"#fff",border:"none",borderRadius:4,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>核對 ✓</button>
+                            )}
                           </div>
                         ) : (
                           <div>
@@ -3743,26 +3792,36 @@ function KshipApp() {
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>📋 待確認匯款</h3>
+                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>📋 待核對明細（儲值＋服務費用）</h3>
                     <button onClick={loadPendingDeposits} style={{padding:"6px 14px",background:"#e8edf4",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:12,fontFamily:"inherit",color:"#34537d"}}>🔄 重新整理</button>
                   </div>
                   {walletLoading ? <div style={{textAlign:"center",padding:30,color:"#8a9ab0"}}>載入中...</div>
-                  : pendingDeposits.length === 0 ? <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>目前沒有待確認的匯款</div>
-                  : pendingDeposits.map(function(dep){
-                    var d = dep.created_at ? new Date(dep.created_at).toLocaleDateString('zh-TW',{year:'numeric',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                  : pendingDeposits.length === 0 ? <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>目前沒有待核對的項目</div>
+                  : pendingDeposits.map(function(item){
+                    var d = item.created_at ? new Date(item.created_at).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                    var isDeposit = item._type === 'deposit';
+                    var tagBg = isDeposit ? '#fff9f0' : '#f0f8ff';
+                    var tagBorder = isDeposit ? '#f0dab5' : '#c4d9f0';
+                    var tagColor = isDeposit ? '#c4953a' : '#34537d';
+                    var tagLabel = isDeposit ? '💰 儲值' : '📋 '+((item.description||'').substring(0,10));
                     return (
-                      <div key={dep.id} style={{background:"#fff9f0",borderRadius:8,padding:"14px 16px",border:"1px solid #f0dab5",marginBottom:8,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                      <div key={item.id} style={{background:tagBg,borderRadius:8,padding:"14px 16px",border:"1px solid "+tagBorder,marginBottom:8,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                         <div style={{flex:1,minWidth:150}}>
-                          <div style={{fontWeight:700,fontSize:15,color:"#c4953a"}}>{dep.currency} {(+dep.amount).toLocaleString()}</div>
-                          <div style={{fontSize:12,color:"#34537d",fontWeight:600,marginTop:2}}>會員：{dep.memberName} ({dep.member_code})</div>
-                          <div style={{fontSize:11,color:"#8a9ab0",marginTop:2}}>後五碼：{dep.bank_last5} · 戶名：{dep.account_name}</div>
+                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                            <span style={{fontSize:11,background:tagBorder,color:tagColor,padding:"2px 8px",borderRadius:4,fontWeight:600}}>{tagLabel}</span>
+                            <span style={{fontWeight:700,fontSize:15,color:tagColor}}>{isDeposit ? item.currency : ''} {(+item.amount).toLocaleString()}</span>
+                          </div>
+                          <div style={{fontSize:12,color:"#34537d",fontWeight:600}}>會員：{item.memberName} ({item.member_code})</div>
+                          {isDeposit && <div style={{fontSize:11,color:"#8a9ab0",marginTop:2}}>後五碼：{item.bank_last5} · 戶名：{item.account_name}</div>}
+                          {!isDeposit && <div style={{fontSize:11,color:"#8a9ab0",marginTop:2}}>{item.description} · {item.note||''}</div>}
                           <div style={{fontSize:11,color:"#8a9ab0"}}>{d}</div>
                         </div>
                         <div style={{display:"flex",gap:6}}>
-                          <button onClick={function(){confirmDeposit(dep.id);}} style={{padding:"8px 18px",background:"#5b9e6f",color:"#fff",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>✅ 已付款</button>
-                          <button onClick={async function(){
-                            if(!confirm('確定標記為待確認？客人暫時不會收到金額。')) return;
-                          }} style={{padding:"8px 14px",background:"#e8edf4",color:"#34537d",border:"none",borderRadius:6,fontWeight:500,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>⏳ 待確認</button>
+                          {isDeposit ? (
+                            <button onClick={function(){confirmDeposit(item.id);}} style={{padding:"8px 18px",background:"#5b9e6f",color:"#fff",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>✅ 已付款</button>
+                          ) : (
+                            <button onClick={function(){confirmFeeRecord(item.id);}} style={{padding:"8px 18px",background:"#5b9e6f",color:"#fff",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>✅ 核對</button>
+                          )}
                         </div>
                       </div>
                     );
@@ -3776,37 +3835,43 @@ function KshipApp() {
               <div style={{display:"flex",flexDirection:"column",gap:14}}>
                 <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
-                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>✅ 已核對匯款紀錄</h3>
+                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>✅ 已核對紀錄（依月份）</h3>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <input type="month" value={verifiedMonth} onChange={function(e){setVerifiedMonth(e.target.value);}} style={{padding:"6px 10px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit",outline:"none"}} />
-                      <span style={{fontSize:11,color:"#8a9ab0"}}>（保留一年資料）</span>
+                      <span style={{fontSize:11,color:"#8a9ab0"}}>（保留一年）</span>
                     </div>
                   </div>
                   {walletLoading ? <div style={{textAlign:"center",padding:30,color:"#8a9ab0"}}>載入中...</div>
                   : verifiedDeposits.length === 0 ? <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>此月份無已核對紀錄</div>
                   : (<div>
                     <div style={{display:"flex",padding:"8px 12px",background:"#f0f4fa",borderRadius:6,marginBottom:4,fontSize:11,fontWeight:600,color:"#34537d",gap:8}}>
+                      <span style={{flex:"0 0 60px"}}>類型</span>
                       <span style={{flex:1,minWidth:80}}>會員</span>
-                      <span style={{width:100}}>金額</span>
-                      <span style={{width:80}}>後五碼</span>
-                      <span style={{width:80}}>戶名</span>
-                      <span style={{width:80}}>確認者</span>
-                      <span style={{width:120}}>確認時間</span>
+                      <span style={{flex:"0 0 100px"}}>金額</span>
+                      <span style={{flex:"0 0 100px"}}>說明</span>
+                      <span style={{flex:"0 0 60px"}}>確認者</span>
+                      <span style={{flex:"0 0 90px"}}>時間</span>
                     </div>
-                    {verifiedDeposits.map(function(dep){
-                      var d = dep.confirmed_at ? new Date(dep.confirmed_at).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                    {verifiedDeposits.map(function(item){
+                      var isDeposit = item._type === 'deposit';
+                      var vTime = item._verifiedAt ? new Date(item._verifiedAt).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                      var desc = isDeposit ? '後五碼：'+(item.bank_last5||'') : (item.description||'').substring(0,15);
+                      var verifier = isDeposit ? (item.confirmed_by||'—') : (item.verified_by||'—');
                       return (
-                        <div key={dep.id} style={{display:"flex",padding:"10px 12px",background:"#fff",borderRadius:6,marginBottom:2,fontSize:12,alignItems:"center",gap:8,border:"1px solid #f0f2f5"}}>
-                          <span style={{flex:1,minWidth:80,fontWeight:600}}>{dep.memberName} ({dep.member_code})</span>
-                          <span style={{width:100,fontWeight:700,color:"#5b9e6f"}}>{dep.currency} {(+dep.amount).toLocaleString()}</span>
-                          <span style={{width:80}}>{dep.bank_last5}</span>
-                          <span style={{width:80}}>{dep.account_name}</span>
-                          <span style={{width:80,color:"#34537d"}}>{dep.confirmed_by||'—'}</span>
-                          <span style={{width:120,color:"#8a9ab0"}}>{d}</span>
+                        <div key={item.id} style={{display:"flex",padding:"10px 12px",background:"#fff",borderRadius:6,marginBottom:2,fontSize:12,alignItems:"center",gap:8,border:"1px solid #f0f2f5"}}>
+                          <span style={{flex:"0 0 60px"}}><span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:isDeposit?"#fff9f0":"#f0f8ff",color:isDeposit?"#c4953a":"#34537d",fontWeight:600}}>{isDeposit?'儲值':'服務'}</span></span>
+                          <span style={{flex:1,minWidth:80,fontWeight:600}}>{item.memberName} ({item.member_code})</span>
+                          <span style={{flex:"0 0 100px",fontWeight:700,color:"#5b9e6f"}}>{isDeposit?item.currency:''} {(+item.amount).toLocaleString()}</span>
+                          <span style={{flex:"0 0 100px",fontSize:11,color:"#8a9ab0"}}>{desc}</span>
+                          <span style={{flex:"0 0 60px",color:"#34537d"}}>{verifier}</span>
+                          <span style={{flex:"0 0 90px",color:"#8a9ab0",fontSize:11}}>{vTime}</span>
                         </div>
                       );
                     })}
-                    <div style={{marginTop:8,fontSize:12,color:"#8a9ab0"}}>共 {verifiedDeposits.length} 筆紀錄</div>
+                    <div style={{marginTop:10,paddingTop:10,borderTop:"2px solid #34537d",display:"flex",justifyContent:"space-between",fontSize:13}}>
+                      <span>本月已核對：{verifiedDeposits.length} 筆</span>
+                      <span style={{fontWeight:700,color:"#34537d"}}>合計 {w(verifiedDeposits.reduce(function(s,v){return s+(+v.amount);},0))}</span>
+                    </div>
                   </div>)}
                 </div>
               </div>
