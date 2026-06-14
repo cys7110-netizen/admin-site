@@ -339,7 +339,7 @@ const NAV = [
     { k: "fin-revenue", l: "營收明細" },
     { k: "fin-expense", l: "支出管理" },
     { k: "fin-salary", l: "薪資支出" },
-    { k: "fin-collection", l: "收款紀錄" },
+    { k: "fin-collection", l: "已收款紀錄" },
     { k: "fin-shiplist", l: "出貨/付款" },
     { k: "fin-profit", l: "利潤分析" },
     { k: "fin-unpaid", l: "收款管理" },
@@ -367,6 +367,7 @@ const NAV = [
   { k: "account-mgmt", l: "帳戶相關", sub: [
     { k: "acct-pending", l: "未核對" },
     { k: "acct-verified", l: "已核對" },
+    { k: "acct-deduct", l: "手動扣款" },
   ]},
   { k: "mgr-expense", l: "支出管理", sub: [
     { k: "exp-meals", l: "每日餐費" },
@@ -943,6 +944,47 @@ function KshipApp() {
     if(loggedIn && (tab==='acct-pending')) loadPendingDeposits();
     if(loggedIn && (tab==='acct-verified')) loadVerifiedDeposits(verifiedMonth);
   }, [loggedIn, tab, verifiedMonth]);
+
+  // ── 手動扣款功能 ──
+  var [deductForm, setDeductForm] = useState({memberCode:'', currency:'TWD', amount:'', description:'', date:new Date().toISOString().slice(0,10)});
+  var [deductResult, setDeductResult] = useState(null);
+  var [deductBalance, setDeductBalance] = useState(null);
+
+  async function lookupDeductBalance(mc) {
+    if(!mc || !sb) { setDeductBalance(null); return; }
+    try {
+      var {data} = await sb.from('wallet_balances').select('*').eq('member_code', mc.trim()).single();
+      setDeductBalance(data || {balance_twd:0, balance_krw:0});
+    } catch(e) { setDeductBalance({balance_twd:0, balance_krw:0}); }
+  }
+
+  async function submitDeduction() {
+    var mc = deductForm.memberCode.trim();
+    var amt = parseFloat(deductForm.amount);
+    var cur = deductForm.currency;
+    var desc = deductForm.description.trim();
+    var dt = deductForm.date;
+    if(!mc) { alert('請輸入會員代號'); return; }
+    if(!amt || amt <= 0) { alert('請輸入正確金額'); return; }
+    if(!desc) { alert('請輸入扣款項目說明'); return; }
+    // 查餘額
+    var {data:bal} = await sb.from('wallet_balances').select('*').eq('member_code', mc).single();
+    var curBal = bal ? (cur === 'TWD' ? +bal.balance_twd : +bal.balance_krw) : 0;
+    if(curBal < amt) {
+      if(!confirm('⚠️ 餘額不足！\n\n目前餘額：'+(cur==='TWD'?'NT$':'₩')+curBal.toLocaleString()+'\n扣款金額：'+(cur==='TWD'?'NT$':'₩')+amt.toLocaleString()+'\n\n仍要繼續扣款（餘額將變為負數）？')) return;
+    }
+    var now = new Date().toISOString();
+    var newTWD = bal ? +bal.balance_twd : 0;
+    var newKRW = bal ? +bal.balance_krw : 0;
+    if(cur === 'TWD') newTWD -= amt; else newKRW -= amt;
+    try {
+      await sb.from('wallet_balances').upsert({member_code:mc, balance_twd:newTWD, balance_krw:newKRW, updated_at:now},{onConflict:'member_code'});
+      await sb.from('wallet_transactions').insert({member_code:mc, type:'deduct', amount:amt, currency:cur, description:desc+' ('+dt+')', balance_after_twd:newTWD, balance_after_krw:newKRW, created_at:now});
+      setDeductResult({ok:true, msg:'✅ 扣款成功！'+mc+' '+(cur==='TWD'?'NT$':'₩')+amt.toLocaleString()+' → 餘額 '+(cur==='TWD'?'NT$'+newTWD.toLocaleString():'₩'+newKRW.toLocaleString())});
+      setDeductForm({memberCode:'', currency:'TWD', amount:'', description:'', date:new Date().toISOString().slice(0,10)});
+      setDeductBalance(null);
+    } catch(e) { setDeductResult({ok:false, msg:'❌ 扣款失敗：'+(e.message||e)}); }
+  }
 
 
   // ── 支出 CRUD → Supabase ──
@@ -3766,6 +3808,40 @@ function KshipApp() {
                     })}
                     <div style={{marginTop:8,fontSize:12,color:"#8a9ab0"}}>共 {verifiedDeposits.length} 筆紀錄</div>
                   </div>)}
+                </div>
+              </div>
+            )}
+
+            {tab === "acct-deduct" && (
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div style={{background:"#fff",borderRadius:8,padding:20,border:"1px solid #dce3ed"}}>
+                  <h3 style={{fontSize:15,fontWeight:700,margin:"0 0 16px",color:"#34537d"}}>💸 手動扣款（從客人錢包扣除）</h3>
+                  <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <label style={{fontSize:13,fontWeight:600,minWidth:80,color:"#5a6e87"}}>會員代號 *</label>
+                      <input value={deductForm.memberCode} onChange={function(e){setDeductForm(Object.assign({},deductForm,{memberCode:e.target.value}));}} onBlur={function(e){lookupDeductBalance(e.target.value);}} placeholder="例: 12345" style={{flex:1,padding:"8px 12px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit"}} />
+                      {deductBalance && <span style={{fontSize:12,color:"#5b9e6f",fontWeight:700,whiteSpace:"nowrap"}}>餘額 NT${(+deductBalance.balance_twd||0).toLocaleString()} / ₩{(+deductBalance.balance_krw||0).toLocaleString()}</span>}
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <label style={{fontSize:13,fontWeight:600,minWidth:80,color:"#5a6e87"}}>幣別 *</label>
+                      <button onClick={function(){setDeductForm(Object.assign({},deductForm,{currency:'TWD'}));}} style={{padding:"8px 16px",border:deductForm.currency==='TWD'?"2px solid #1B4F8A":"2px solid #dce3ed",borderRadius:6,background:deductForm.currency==='TWD'?"rgba(27,79,138,0.08)":"#f8f9fb",fontWeight:600,cursor:"pointer",fontSize:13,fontFamily:"inherit",color:deductForm.currency==='TWD'?"#1B4F8A":"#8a9ab0"}}>🇹🇼 TWD</button>
+                      <button onClick={function(){setDeductForm(Object.assign({},deductForm,{currency:'KRW'}));}} style={{padding:"8px 16px",border:deductForm.currency==='KRW'?"2px solid #1B4F8A":"2px solid #dce3ed",borderRadius:6,background:deductForm.currency==='KRW'?"rgba(27,79,138,0.08)":"#f8f9fb",fontWeight:600,cursor:"pointer",fontSize:13,fontFamily:"inherit",color:deductForm.currency==='KRW'?"#1B4F8A":"#8a9ab0"}}>🇰🇷 KRW</button>
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <label style={{fontSize:13,fontWeight:600,minWidth:80,color:"#5a6e87"}}>扣款金額 *</label>
+                      <input type="number" value={deductForm.amount} onChange={function(e){setDeductForm(Object.assign({},deductForm,{amount:e.target.value}));}} placeholder="金額" min="1" style={{flex:1,padding:"8px 12px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit"}} />
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <label style={{fontSize:13,fontWeight:600,minWidth:80,color:"#5a6e87"}}>項目說明 *</label>
+                      <input value={deductForm.description} onChange={function(e){setDeductForm(Object.assign({},deductForm,{description:e.target.value}));}} placeholder="例: 出貨運費、點貨費用、代購墊付" style={{flex:1,padding:"8px 12px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit"}} />
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <label style={{fontSize:13,fontWeight:600,minWidth:80,color:"#5a6e87"}}>日期</label>
+                      <input type="date" value={deductForm.date} onChange={function(e){setDeductForm(Object.assign({},deductForm,{date:e.target.value}));}} style={{padding:"8px 12px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit"}} />
+                    </div>
+                    <button onClick={submitDeduction} style={{marginTop:4,padding:"12px",background:"#c0392b",border:"none",color:"#fff",borderRadius:8,fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>💸 確認扣款</button>
+                    {deductResult && <div style={{padding:10,borderRadius:6,fontSize:13,fontWeight:600,background:deductResult.ok?"rgba(40,180,100,0.1)":"rgba(220,60,60,0.1)",color:deductResult.ok?"#2e7d32":"#c0392b"}}>{deductResult.msg}</div>}
+                  </div>
                 </div>
               </div>
             )}
