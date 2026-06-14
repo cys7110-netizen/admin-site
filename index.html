@@ -894,7 +894,26 @@ function KshipApp() {
       // ★ 1) 錢包儲值（pending）
       var { data: deps } = await sb.from('wallet_deposits').select('*').eq('status','pending').order('created_at',{ascending:false});
       // ★ 2) 服務費用（finance_records type=payment, 未核對）
-      var { data: fees } = await sb.from('finance_records').select('*').eq('type','payment').is('verified_at',null).order('created_at',{ascending:false});
+      var fees = [];
+      try {
+        var res = await sb.from('finance_records').select('*').eq('type','payment').is('verified_at',null).order('created_at',{ascending:false});
+        fees = res.data || [];
+      } catch(e) {
+        // verified_at 欄位可能不存在，fallback 查全部
+        try {
+          var res2 = await sb.from('finance_records').select('*').eq('type','payment').order('created_at',{ascending:false});
+          fees = (res2.data || []).filter(function(f){ return !f.verified_at; });
+        } catch(e2) { console.error('fee query fallback error:', e2); }
+      }
+      // Supabase 查詢錯誤不會 throw，檢查 error
+      if(!fees || fees.length === 0) {
+        try {
+          var res3 = await sb.from('finance_records').select('*').eq('type','payment').order('created_at',{ascending:false});
+          if(res3.data && res3.data.length > 0) {
+            fees = res3.data.filter(function(f){ return !f.verified_at; });
+          }
+        } catch(e3){}
+      }
       // 合併查會員名稱
       var allCodes = [...new Set([...(deps||[]).map(d=>d.member_code),...(fees||[]).map(f=>f.member_code)].filter(Boolean))];
       var memberMap = {};
@@ -923,7 +942,16 @@ function KshipApp() {
       // ★ 1) 已核對儲值
       var { data: deps } = await sb.from('wallet_deposits').select('*').eq('status','confirmed').gte('confirmed_at',startDate).lt('confirmed_at',endDate).order('confirmed_at',{ascending:false});
       // ★ 2) 已核對服務費用
-      var { data: fees } = await sb.from('finance_records').select('*').eq('type','payment').not('verified_at','is',null).gte('verified_at',startDate).lt('verified_at',endDate).order('verified_at',{ascending:false});
+      var fees = [];
+      try {
+        var res = await sb.from('finance_records').select('*').eq('type','payment').not('verified_at','is',null).gte('verified_at',startDate).lt('verified_at',endDate).order('verified_at',{ascending:false});
+        fees = res.data || [];
+      } catch(e) {
+        try {
+          var res2 = await sb.from('finance_records').select('*').eq('type','payment').order('created_at',{ascending:false});
+          fees = (res2.data || []).filter(function(f){ return f.verified_at && f.verified_at >= startDate && f.verified_at < endDate; });
+        } catch(e2){}
+      }
       var oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear()-1);
       deps = (deps||[]).filter(d=> new Date(d.confirmed_at) >= oneYearAgo);
       fees = (fees||[]).filter(f=> new Date(f.verified_at) >= oneYearAgo);
@@ -3927,27 +3955,39 @@ function KshipApp() {
                   {walletLoading ? <div style={{textAlign:"center",padding:30,color:"#8a9ab0"}}>載入中...</div>
                   : verifiedDeposits.length === 0 ? <div style={{textAlign:"center",padding:40,color:"#8a9ab0",fontSize:13}}>此月份無已核對紀錄</div>
                   : (<div>
-                    <div style={{display:"flex",padding:"8px 12px",background:"#f0f4fa",borderRadius:6,marginBottom:4,fontSize:11,fontWeight:600,color:"#34537d",gap:8}}>
-                      <span style={{flex:"0 0 60px"}}>類型</span>
-                      <span style={{flex:1,minWidth:80}}>會員</span>
-                      <span style={{flex:"0 0 100px"}}>金額</span>
-                      <span style={{flex:"0 0 100px"}}>說明</span>
-                      <span style={{flex:"0 0 60px"}}>確認者</span>
-                      <span style={{flex:"0 0 90px"}}>時間</span>
-                    </div>
+                    {!mobile && <div style={{display:"flex",padding:"8px 12px",background:"#f0f4fa",borderRadius:6,marginBottom:4,fontSize:11,fontWeight:600,color:"#34537d",gap:8}}>
+                      <span style={{flex:"0 0 50px"}}>類型</span>
+                      <span style={{flex:1}}>會員</span>
+                      <span style={{flex:"0 0 90px"}}>金額</span>
+                      <span style={{flex:"0 0 90px"}}>說明</span>
+                      <span style={{flex:"0 0 50px"}}>確認者</span>
+                      <span style={{flex:"0 0 80px"}}>時間</span>
+                    </div>}
                     {verifiedDeposits.map(function(item){
                       var isDeposit = item._type === 'deposit';
                       var vTime = item._verifiedAt ? new Date(item._verifiedAt).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
                       var desc = isDeposit ? '後五碼：'+(item.bank_last5||'') : (item.description||'').substring(0,15);
                       var verifier = isDeposit ? (item.confirmed_by||'—') : (item.verified_by||'—');
+                      if(mobile) {
+                        return (
+                          <div key={item.id} style={{padding:"10px 12px",background:"#fff",borderRadius:6,marginBottom:4,border:"1px solid #f0f2f5",fontSize:12}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                              <span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:isDeposit?"#fff9f0":"#f0f8ff",color:isDeposit?"#c4953a":"#34537d",fontWeight:600}}>{isDeposit?'儲值':'服務'}</span>
+                              <span style={{fontWeight:700,color:"#5b9e6f"}}>{isDeposit?item.currency:''} {(+item.amount).toLocaleString()}</span>
+                            </div>
+                            <div style={{fontWeight:600,marginBottom:2}}>{item.memberName} ({item.member_code})</div>
+                            <div style={{color:"#8a9ab0",fontSize:11}}>{desc} · {verifier} · {vTime}</div>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={item.id} style={{display:"flex",padding:"10px 12px",background:"#fff",borderRadius:6,marginBottom:2,fontSize:12,alignItems:"center",gap:8,border:"1px solid #f0f2f5"}}>
-                          <span style={{flex:"0 0 60px"}}><span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:isDeposit?"#fff9f0":"#f0f8ff",color:isDeposit?"#c4953a":"#34537d",fontWeight:600}}>{isDeposit?'儲值':'服務'}</span></span>
-                          <span style={{flex:1,minWidth:80,fontWeight:600}}>{item.memberName} ({item.member_code})</span>
-                          <span style={{flex:"0 0 100px",fontWeight:700,color:"#5b9e6f"}}>{isDeposit?item.currency:''} {(+item.amount).toLocaleString()}</span>
-                          <span style={{flex:"0 0 100px",fontSize:11,color:"#8a9ab0"}}>{desc}</span>
-                          <span style={{flex:"0 0 60px",color:"#34537d"}}>{verifier}</span>
-                          <span style={{flex:"0 0 90px",color:"#8a9ab0",fontSize:11}}>{vTime}</span>
+                          <span style={{flex:"0 0 50px"}}><span style={{fontSize:10,padding:"2px 6px",borderRadius:3,background:isDeposit?"#fff9f0":"#f0f8ff",color:isDeposit?"#c4953a":"#34537d",fontWeight:600}}>{isDeposit?'儲值':'服務'}</span></span>
+                          <span style={{flex:1,fontWeight:600}}>{item.memberName} ({item.member_code})</span>
+                          <span style={{flex:"0 0 90px",fontWeight:700,color:"#5b9e6f"}}>{isDeposit?item.currency:''} {(+item.amount).toLocaleString()}</span>
+                          <span style={{flex:"0 0 90px",fontSize:11,color:"#8a9ab0"}}>{desc}</span>
+                          <span style={{flex:"0 0 50px",color:"#34537d"}}>{verifier}</span>
+                          <span style={{flex:"0 0 80px",color:"#8a9ab0",fontSize:11}}>{vTime}</span>
                         </div>
                       );
                     })}
