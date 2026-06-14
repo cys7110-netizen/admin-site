@@ -373,6 +373,7 @@ const NAV = [
     { k: "exp-meals", l: "每日餐費" },
     { k: "exp-packing", l: "包材支出" },
   ]},
+  { k: "mgr-cvs", l: "超取管理" },
   { k: "settings", l: "系統設定", sub: [
     { k: "set-company", l: "公司資料設定" },
     { k: "set-shipping", l: "運費設定" },
@@ -500,7 +501,7 @@ function KshipApp() {
         return n;
       });
     if (userRole === "staff") return items
-      .filter(n => n.k === "dashboard" || n.k === "hr" || n.k === "mgr-expense")
+      .filter(n => n.k === "dashboard" || n.k === "hr" || n.k === "mgr-expense" || n.k === "mgr-cvs")
       .map(n => {
         if(n.k === "dashboard") return { ...n, sub: n.sub ? n.sub.filter(s => !STAFF_DASH_HIDE.includes(s.k)) : undefined };
         if(n.k === "hr") return { ...n, sub: n.sub ? n.sub.filter(s => STAFF_HR_PAGES.includes(s.k)) : undefined };
@@ -980,6 +981,45 @@ function KshipApp() {
       loadFinancials();
     } catch(e){ alert('❌ '+e.message); }
   }
+
+  // ── 超取管理 ──
+  var [cvsOrders, setCvsOrders] = useState([]);
+  var [cvsUrl, setCvsUrl] = useState('');
+
+  async function loadCvsOrders() {
+    if(!sb) return;
+    try {
+      var {data} = await sb.from('tasks').select('*')
+        .or('task_type.eq.ship,type.eq.ship')
+        .ilike('title','%超商%')
+        .order('created_at',{ascending:false}).limit(50);
+      // 查會員名稱
+      var codes = [...new Set((data||[]).map(d=>d.member_code).filter(Boolean))];
+      var mMap = {};
+      if(codes.length>0) { var {data:ms}=await sb.from('members').select('member_code,name').in('member_code',codes); (ms||[]).forEach(m=>{mMap[m.member_code]=m.name;}); }
+      setCvsOrders((data||[]).map(d=>({...d, memberName:mMap[d.member_code]||'—'})));
+    } catch(e){ console.error('loadCvsOrders:',e); }
+  }
+
+  async function sendCvsUrl() {
+    if(!cvsUrl.trim()) { alert('請先填寫下單網址'); return; }
+    var pending = cvsOrders.filter(o=> o.status==='pending' || (o.details||'').indexOf('待結單')>=0);
+    if(pending.length===0) { alert('目前沒有待結單的超取訂單'); return; }
+    if(!confirm('確認發送下單網址給 '+pending.length+' 位客人？\n\n'+cvsUrl.trim())) return;
+    var now = new Date().toISOString();
+    for(var i=0;i<pending.length;i++) {
+      var o = pending[i];
+      try {
+        var newDetails = (o.details||'').replace('待結單','已發送下單網址') + '\n下單網址：'+cvsUrl.trim();
+        await sb.from('tasks').update({details:newDetails, status:'completed', note:'下單網址已發送 '+now}).eq('id',o.id);
+      } catch(e){}
+    }
+    alert('✅ 已發送 '+pending.length+' 筆超取下單網址');
+    setCvsUrl('');
+    loadCvsOrders();
+  }
+
+  useEffect(function(){ if(loggedIn && tab==='mgr-cvs') loadCvsOrders(); }, [loggedIn, tab]);
 
   useEffect(function(){
     if(loggedIn && (tab==='acct-pending')) loadPendingDeposits();
@@ -2130,6 +2170,43 @@ function KshipApp() {
                       <span style={{fontWeight:700,color:"#c0504d"}}>{w(r.amount)}</span>
                       <span style={{fontSize:11,color:r.days>30?"#c0504d":"#c4953a",fontWeight:600}}>{r.count}筆 · {r.days||0}天</span>
                     </div>))}
+                </div>
+              </div>
+            )}
+
+            {/* ═══ 超取管理 ═══ */}
+            {tab === "mgr-cvs" && (
+              <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                <div style={{background:"#fff",borderRadius:8,padding:16,border:"1px solid #dce3ed"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:8}}>
+                    <h3 style={{fontSize:15,fontWeight:700,margin:0,color:"#34537d"}}>🏪 超取管理（每週三結單）</h3>
+                    <button onClick={loadCvsOrders} style={{padding:"6px 14px",background:"#e8edf4",border:"none",borderRadius:6,fontWeight:600,cursor:"pointer",fontSize:12,fontFamily:"inherit",color:"#34537d"}}>🔄 重新整理</button>
+                  </div>
+                  <div style={{background:"#fffaf0",border:"1px solid #f0dab5",borderRadius:8,padding:14,marginBottom:14}}>
+                    <div style={{fontSize:13,fontWeight:600,color:"#c4953a",marginBottom:8}}>📋 發送下單網址（一鍵通知所有待結單客人）</div>
+                    <div style={{display:"flex",gap:8}}>
+                      <input value={cvsUrl} onChange={function(e){setCvsUrl(e.target.value);}} placeholder="貼上 7-11 賣貨便下單網址" style={{flex:1,padding:"10px 12px",border:"1.5px solid #dce3ed",borderRadius:6,fontSize:13,fontFamily:"inherit"}} />
+                      <button onClick={sendCvsUrl} style={{padding:"10px 20px",background:"#E8A87C",color:"#fff",border:"none",borderRadius:6,fontWeight:700,cursor:"pointer",fontSize:13,fontFamily:"inherit",whiteSpace:"nowrap"}}>📤 發送</button>
+                    </div>
+                    <div style={{fontSize:11,color:"#8a9ab0",marginTop:6}}>發送後所有「待結單」狀態的超取訂單將標記為「已發送」，客人會在出貨頁看到下單網址</div>
+                  </div>
+                  {cvsOrders.length===0 ? <div style={{textAlign:"center",padding:30,color:"#8a9ab0",fontSize:13}}>目前沒有超取訂單</div> :
+                  <div>
+                    <div style={{fontSize:12,fontWeight:600,color:"#34537d",marginBottom:8}}>超取訂單（{cvsOrders.filter(function(o){return o.status==='pending'||(o.details||'').indexOf('待結單')>=0;}).length} 筆待結單 / 共 {cvsOrders.length} 筆）</div>
+                    {cvsOrders.map(function(o){
+                      var isPending = o.status==='pending' || (o.details||'').indexOf('待結單')>=0;
+                      var d = o.created_at ? new Date(o.created_at).toLocaleDateString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+                      return (
+                        <div key={o.id} style={{padding:"12px 14px",borderBottom:"1px solid #f0f2f5",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",fontSize:13}}>
+                          <span style={{width:8,height:8,borderRadius:"50%",background:isPending?"#E8A87C":"#5b9e6f",flexShrink:0}} />
+                          <span style={{fontWeight:600,minWidth:60}}>{o.member_code}</span>
+                          <span style={{color:"#8a9ab0",flex:1}}>{o.memberName}</span>
+                          <span style={{fontSize:11,color:"#8a9ab0"}}>{d}</span>
+                          <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,fontWeight:600,background:isPending?"#fffaf0":"#e8f5e9",color:isPending?"#c4953a":"#5b9e6f"}}>{isPending?'待結單':'已發送'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>}
                 </div>
               </div>
             )}
